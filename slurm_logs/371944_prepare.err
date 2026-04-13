@@ -1,0 +1,7 @@
+Traceback (most recent call last):
+  File "/home/rmfrieske/whisper_hallucination/create_noisy_dataset.py", line 233, in <module>
+    main()
+  File "/home/rmfrieske/whisper_hallucination/create_noisy_dataset.py", line 201, in main
+    noisy_rows = noise_fn(clean_rows, n_noisy, rng, n_pairs=args.n_repeat_pairs)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: create_noise_ru() got an unexpected keyword argument 'n_pairs'

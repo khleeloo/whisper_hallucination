@@ -1,0 +1,26 @@
+no change     /cm/shared/apps/Anaconda3/2023.09-0/condabin/conda
+no change     /cm/shared/apps/Anaconda3/2023.09-0/bin/conda
+no change     /cm/shared/apps/Anaconda3/2023.09-0/bin/conda-env
+no change     /cm/shared/apps/Anaconda3/2023.09-0/bin/activate
+no change     /cm/shared/apps/Anaconda3/2023.09-0/bin/deactivate
+no change     /cm/shared/apps/Anaconda3/2023.09-0/etc/profile.d/conda.sh
+no change     /cm/shared/apps/Anaconda3/2023.09-0/etc/fish/conf.d/conda.fish
+no change     /cm/shared/apps/Anaconda3/2023.09-0/shell/condabin/Conda.psm1
+no change     /cm/shared/apps/Anaconda3/2023.09-0/shell/condabin/conda-hook.ps1
+no change     /cm/shared/apps/Anaconda3/2023.09-0/lib/python3.11/site-packages/xontrib/conda.xsh
+no change     /cm/shared/apps/Anaconda3/2023.09-0/etc/profile.d/conda.csh
+no change     /home/rmfrieske/.bashrc
+No action taken.
+=== Training config: uu ===
+SLURM_ARRAY_TASK_ID: 1
+GPU: NVIDIA H800
+=== Whisper LoRA Fine-tuning: uu ===
+Train TSV: /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/uu/train.tsv
+Dev TSV: /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/dev.tsv
+Model: openai/whisper-large-v3
+LoRA r=16, alpha=32, dropout=0.1
+Loading training data...
+  Train samples: 129600
+Loading dev data...
+  Dev samples: 16400
+Processing datasets...
