@@ -20,6 +20,8 @@ Usage:
 import argparse
 import csv
 import os
+import sys
+import time
 
 import evaluate
 import numpy as np
@@ -28,7 +30,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Union
 
 from datasets import Audio, Dataset
-from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
+from peft import LoraConfig, get_peft_model
 from transformers import (
     Seq2SeqTrainer,
     Seq2SeqTrainingArguments,
@@ -60,7 +62,7 @@ def load_cv_dataset_from_tsv(tsv_path, clips_dir):
     return dataset
 
 
-def prepare_dataset(example, feature_extractor, tokenizer, max_label_length=128):
+def prepare_dataset(example, feature_extractor, tokenizer):
     """Process a single example: extract features and tokenize labels."""
     audio = example["audio"]
     example["input_features"] = feature_extractor(
@@ -70,8 +72,6 @@ def prepare_dataset(example, feature_extractor, tokenizer, max_label_length=128)
     sentence = example["sentence"]
     sentence = normalizer(sentence).strip()
     example["labels"] = tokenizer(sentence).input_ids
-    # Mark for filtering (avoids a separate slow filter pass)
-    example["_keep"] = len(example["labels"]) < max_label_length
     return example
 
 
@@ -127,8 +127,7 @@ def compute_metrics(pred, tokenizer, metric_wer):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--noise_config", type=str, required=True,
-                        choices=["base", "uu", "rr", "ru", "ur"],
-                        help="Noise configuration to train on")
+                        help="Noise configuration to train on (base, uu, rr, ru, ur, or sweep like uu_05)")
     parser.add_argument("--data_dir", type=str, required=True,
                         help="Root directory of noisy datasets (output of create_noisy_dataset.py)")
     parser.add_argument("--clips_dir", type=str, required=True,
@@ -159,11 +158,11 @@ def main():
     train_tsv = os.path.join(args.data_dir, args.noise_config, "train.tsv")
     dev_tsv = os.path.join(args.data_dir, "dev.tsv")
 
-    print(f"=== Whisper LoRA Fine-tuning: {args.noise_config} ===")
-    print(f"Train TSV: {train_tsv}")
-    print(f"Dev TSV: {dev_tsv}")
-    print(f"Model: {args.model_name}")
-    print(f"LoRA r={args.lora_r}, alpha={args.lora_alpha}, dropout={args.lora_dropout}")
+    print(f"=== Whisper LoRA Fine-tuning: {args.noise_config} ===", flush=True)
+    print(f"Train TSV: {train_tsv}", flush=True)
+    print(f"Dev TSV: {dev_tsv}", flush=True)
+    print(f"Model: {args.model_name}", flush=True)
+    print(f"LoRA r={args.lora_r}, alpha={args.lora_alpha}, dropout={args.lora_dropout}", flush=True)
 
     # Load processor
     feature_extractor = WhisperFeatureExtractor.from_pretrained(args.model_name)
@@ -171,57 +170,65 @@ def main():
     processor = WhisperProcessor.from_pretrained(args.model_name, language="en", task="transcribe")
 
     # Load datasets
-    print("Loading training data...")
+    print("Loading training data...", flush=True)
     train_dataset = load_cv_dataset_from_tsv(train_tsv, args.clips_dir)
-    print(f"  Train samples: {len(train_dataset)}")
+    print(f"  Train samples: {len(train_dataset)}", flush=True)
 
-    print("Loading dev data...")
+    print("Loading dev data...", flush=True)
     dev_dataset = load_cv_dataset_from_tsv(dev_tsv, args.clips_dir)
-    print(f"  Dev samples: {len(dev_dataset)}")
+    print(f"  Dev samples: {len(dev_dataset)}", flush=True)
 
-    # Process datasets (filter is merged into map via _keep flag)
-    num_workers = min(os.cpu_count() or 4, 16)
-    print(f"Processing datasets with {num_workers} workers...")
+    # Process datasets
+    slurm_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", os.cpu_count() or 4))
+    num_workers = min(slurm_cpus, 4)  # limit map workers to reduce peak RAM during preprocessing
+    print(f"Processing datasets with {num_workers} workers...", flush=True)
+    t0 = time.time()
     train_dataset = train_dataset.map(
-        lambda x: prepare_dataset(x, feature_extractor, tokenizer, args.max_label_length),
+        lambda x: prepare_dataset(x, feature_extractor, tokenizer),
         remove_columns=train_dataset.column_names,
         num_proc=num_workers,
     )
     dev_dataset = dev_dataset.map(
-        lambda x: prepare_dataset(x, feature_extractor, tokenizer, args.max_label_length),
+        lambda x: prepare_dataset(x, feature_extractor, tokenizer),
         remove_columns=dev_dataset.column_names,
         num_proc=num_workers,
     )
 
-    # Fast filter using pre-computed flag (no feature re-read)
-    train_dataset = train_dataset.filter(lambda x: x["_keep"], num_proc=num_workers)
-    dev_dataset = dev_dataset.filter(lambda x: x["_keep"], num_proc=num_workers)
-    train_dataset = train_dataset.remove_columns(["_keep"])
-    dev_dataset = dev_dataset.remove_columns(["_keep"])
-    print(f"  After filtering - Train: {len(train_dataset)}, Dev: {len(dev_dataset)}")
+    # Filter by length (batched)
+    def filter_by_length(examples):
+        return [len(labels) < args.max_label_length for labels in examples["labels"]]
+    print(f"  Map completed in {time.time()-t0:.0f}s", flush=True)
+    print("Filtering by length...", flush=True)
+    train_dataset = train_dataset.filter(filter_by_length, num_proc=num_workers, batched=True, batch_size=1000)
+    dev_dataset = dev_dataset.filter(filter_by_length, num_proc=num_workers, batched=True, batch_size=1000)
+    print(f"  After filtering - Train: {len(train_dataset)}, Dev: {len(dev_dataset)}", flush=True)
 
     # Load model
-    print("Loading model...")
+    print("Loading model...", flush=True)
+    t0 = time.time()
     model = WhisperForConditionalGeneration.from_pretrained(
         args.model_name,
-        torch_dtype=torch.float16,
     )
     model.config.forced_decoder_ids = None
     model.config.suppress_tokens = []
     model.config.use_cache = False  # Required for gradient checkpointing
+    print(f"  Model loaded in {time.time()-t0:.0f}s", flush=True)
 
     # Apply LoRA
-    print("Applying LoRA...")
+    print("Applying LoRA...", flush=True)
     lora_config = LoraConfig(
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
         target_modules=["q_proj", "v_proj", "k_proj", "o_proj", "fc1", "fc2"],
         lora_dropout=args.lora_dropout,
         bias="none",
-        task_type=TaskType.SEQ_2_SEQ_LM,
     )
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
+    sys.stdout.flush()
+
+    # Must set use_cache=False AFTER applying PEFT
+    model.config.use_cache = False
 
     # Data collator
     data_collator = DataCollatorSpeechSeq2SeqWithPadding(
@@ -242,6 +249,7 @@ def main():
         warmup_steps=args.warmup_steps,
         num_train_epochs=args.num_epochs,
         gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
         fp16=True,
         eval_strategy="steps",
         eval_steps=args.eval_steps,
@@ -256,11 +264,12 @@ def main():
         logging_steps=args.logging_steps,
         report_to=["tensorboard"],
         seed=args.seed,
-        dataloader_num_workers=8,
+        dataloader_num_workers=2,  # 8 workers × full audio dataset in RAM = OOM; 2 is sufficient
         remove_unused_columns=False,
     )
 
     # Trainer
+    print("Initializing trainer...", flush=True)
     trainer = Seq2SeqTrainer(
         args=training_args,
         model=model,
@@ -271,15 +280,23 @@ def main():
         tokenizer=processor.feature_extractor,
     )
 
-    # Train
-    print("Starting training...")
-    trainer.train()
+    # Train (resume from checkpoint if available)
+    n_steps = len(train_dataset) // (args.train_batch_size * args.gradient_accumulation_steps) * args.num_epochs
+    print(f"Starting training... ({n_steps} total steps, {args.num_epochs} epochs)", flush=True)
+    resume_ckpt = None
+    if os.path.isdir(args.output_dir):
+        checkpoints = [d for d in os.listdir(args.output_dir) if d.startswith("checkpoint-")]
+        if checkpoints:
+            latest = max(checkpoints, key=lambda x: int(x.split("-")[1]))
+            resume_ckpt = os.path.join(args.output_dir, latest)
+            print(f"Resuming from {resume_ckpt}", flush=True)
+    trainer.train(resume_from_checkpoint=resume_ckpt)
 
     # Save final model
     final_dir = os.path.join(args.output_dir, "final")
     model.save_pretrained(final_dir)
     processor.save_pretrained(final_dir)
-    print(f"Model saved to {final_dir}")
+    print(f"Model saved to {final_dir}", flush=True)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,94 @@
+no change     /cm/shared/apps/Anaconda3/2023.09-0/condabin/conda
+no change     /cm/shared/apps/Anaconda3/2023.09-0/bin/conda
+no change     /cm/shared/apps/Anaconda3/2023.09-0/bin/conda-env
+no change     /cm/shared/apps/Anaconda3/2023.09-0/bin/activate
+no change     /cm/shared/apps/Anaconda3/2023.09-0/bin/deactivate
+no change     /cm/shared/apps/Anaconda3/2023.09-0/etc/profile.d/conda.sh
+no change     /cm/shared/apps/Anaconda3/2023.09-0/etc/fish/conf.d/conda.fish
+no change     /cm/shared/apps/Anaconda3/2023.09-0/shell/condabin/Conda.psm1
+no change     /cm/shared/apps/Anaconda3/2023.09-0/shell/condabin/conda-hook.ps1
+no change     /cm/shared/apps/Anaconda3/2023.09-0/lib/python3.11/site-packages/xontrib/conda.xsh
+no change     /cm/shared/apps/Anaconda3/2023.09-0/etc/profile.d/conda.csh
+no change     /home/rmfrieske/.bashrc
+No action taken.
+Loading /scratch/vemotionsys/rmfrieske/datasets/cv-corpus-22.0-2025-06-20/en/train.tsv...
+  Total training utterances: 1138422
+  Clean subset size: 120000
+
+=== uu_01: UU at 1% (1200 noisy samples) ===
+  Written 121200 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/uu_01/train.tsv
+  Written 1200 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/uu_01/noisy_only.tsv
+  120000 clean + 1200 noisy = 121200 total
+
+=== uu_02: UU at 2% (2400 noisy samples) ===
+  Written 122400 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/uu_02/train.tsv
+  Written 2400 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/uu_02/noisy_only.tsv
+  120000 clean + 2400 noisy = 122400 total
+
+=== uu_05: UU at 5% (6000 noisy samples) ===
+  Written 126000 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/uu_05/train.tsv
+  Written 6000 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/uu_05/noisy_only.tsv
+  120000 clean + 6000 noisy = 126000 total
+
+=== uu_10: UU at 10% (12000 noisy samples) ===
+  Written 132000 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/uu_10/train.tsv
+  Written 12000 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/uu_10/noisy_only.tsv
+  120000 clean + 12000 noisy = 132000 total
+
+=== uu_20: UU at 20% (24000 noisy samples) ===
+  Written 144000 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/uu_20/train.tsv
+  Written 24000 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/uu_20/noisy_only.tsv
+  120000 clean + 24000 noisy = 144000 total
+
+=== uu_50: UU at 50% (60000 noisy samples) ===
+  Written 180000 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/uu_50/train.tsv
+  Written 60000 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/uu_50/noisy_only.tsv
+  120000 clean + 60000 noisy = 180000 total
+
+=== rr_01: RR at 1% (1200 noisy samples) ===
+  Written 121200 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/rr_01/train.tsv
+  Written 1200 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/rr_01/noisy_only.tsv
+  120000 clean + 1200 noisy = 121200 total
+
+=== rr_02: RR at 2% (2400 noisy samples) ===
+  Written 122400 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/rr_02/train.tsv
+  Written 2400 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/rr_02/noisy_only.tsv
+  120000 clean + 2400 noisy = 122400 total
+
+=== rr_05: RR at 5% (6000 noisy samples) ===
+  Written 126000 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/rr_05/train.tsv
+  Written 6000 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/rr_05/noisy_only.tsv
+  120000 clean + 6000 noisy = 126000 total
+
+=== rr_10: RR at 10% (12000 noisy samples) ===
+  Written 132000 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/rr_10/train.tsv
+  Written 12000 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/rr_10/noisy_only.tsv
+  120000 clean + 12000 noisy = 132000 total
+
+=== rr_20: RR at 20% (24000 noisy samples) ===
+  Written 144000 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/rr_20/train.tsv
+  Written 24000 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/rr_20/noisy_only.tsv
+  120000 clean + 24000 noisy = 144000 total
+
+=== rr_50: RR at 50% (60000 noisy samples) ===
+  Written 180000 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/rr_50/train.tsv
+  Written 60000 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/rr_50/noisy_only.tsv
+  120000 clean + 60000 noisy = 180000 total
+
+=== Sweep Summary ===
+Clean subset: 120000 utterances
+Configs created: 12
+  uu_01: 121200 total (1200 noisy)
+  uu_02: 122400 total (2400 noisy)
+  uu_05: 126000 total (6000 noisy)
+  uu_10: 132000 total (12000 noisy)
+  uu_20: 144000 total (24000 noisy)
+  uu_50: 180000 total (60000 noisy)
+  rr_01: 121200 total (1200 noisy)
+  rr_02: 122400 total (2400 noisy)
+  rr_05: 126000 total (6000 noisy)
+  rr_10: 132000 total (12000 noisy)
+  rr_20: 144000 total (24000 noisy)
+  rr_50: 180000 total (60000 noisy)
+Done!
+Sweep data preparation complete

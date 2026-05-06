@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "/home/rmfrieske/whisper_hallucination/finetune_whisper_lora.py", line 287, in <module>
+    main()
+  File "/home/rmfrieske/whisper_hallucination/finetune_whisper_lora.py", line 172, in main
+    train_dataset = load_cv_dataset_from_tsv(train_tsv, args.clips_dir)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/rmfrieske/whisper_hallucination/finetune_whisper_lora.py", line 49, in load_cv_dataset_from_tsv
+    with open(tsv_path, "r", encoding="utf-8") as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/ru/train.tsv'

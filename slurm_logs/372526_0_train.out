@@ -1,0 +1,52 @@
+no change     /cm/shared/apps/Anaconda3/2023.09-0/condabin/conda
+no change     /cm/shared/apps/Anaconda3/2023.09-0/bin/conda
+no change     /cm/shared/apps/Anaconda3/2023.09-0/bin/conda-env
+no change     /cm/shared/apps/Anaconda3/2023.09-0/bin/activate
+no change     /cm/shared/apps/Anaconda3/2023.09-0/bin/deactivate
+no change     /cm/shared/apps/Anaconda3/2023.09-0/etc/profile.d/conda.sh
+no change     /cm/shared/apps/Anaconda3/2023.09-0/etc/fish/conf.d/conda.fish
+no change     /cm/shared/apps/Anaconda3/2023.09-0/shell/condabin/Conda.psm1
+no change     /cm/shared/apps/Anaconda3/2023.09-0/shell/condabin/conda-hook.ps1
+no change     /cm/shared/apps/Anaconda3/2023.09-0/lib/python3.11/site-packages/xontrib/conda.xsh
+no change     /cm/shared/apps/Anaconda3/2023.09-0/etc/profile.d/conda.csh
+no change     /home/rmfrieske/.bashrc
+No action taken.
+=== Training config: base ===
+SLURM_ARRAY_TASK_ID: 0
+GPU: NVIDIA H800
+=== Whisper LoRA Fine-tuning: base ===
+Train TSV: /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/base/train.tsv
+Dev TSV: /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/dev.tsv
+Model: openai/whisper-large-v3
+LoRA r=16, alpha=32, dropout=0.1
+Loading training data...
+  Train samples: 120000
+Loading dev data...
+  Dev samples: 16400
+Processing datasets with 8 workers...
+  After filtering - Train: 119997, Dev: 16399
+Loading model...
+Applying LoRA...
+trainable params: 24,903,680 || all params: 1,568,394,240 || trainable%: 1.5878
+Starting training...
+{'loss': 0.8138, 'grad_norm': 0.9799107909202576, 'learning_rate': 2e-05, 'epoch': 0.03}
+{'loss': 0.1735, 'grad_norm': 0.52727872133255, 'learning_rate': 4e-05, 'epoch': 0.05}
+{'loss': 0.1526, 'grad_norm': 0.643501341342926, 'learning_rate': 6e-05, 'epoch': 0.08}
+{'loss': 0.1499, 'grad_norm': 0.8641659617424011, 'learning_rate': 8e-05, 'epoch': 0.11}
+{'loss': 0.1498, 'grad_norm': 0.5639902949333191, 'learning_rate': 0.0001, 'epoch': 0.13}
+{'loss': 0.1436, 'grad_norm': 0.45374101400375366, 'learning_rate': 9.945205479452056e-05, 'epoch': 0.16}
+{'loss': 0.146, 'grad_norm': 0.3596342206001282, 'learning_rate': 9.89041095890411e-05, 'epoch': 0.19}
+{'loss': 0.1396, 'grad_norm': 0.4292018413543701, 'learning_rate': 9.835616438356165e-05, 'epoch': 0.21}
+{'loss': 0.1443, 'grad_norm': 0.3651140630245209, 'learning_rate': 9.78082191780822e-05, 'epoch': 0.24}
+{'loss': 0.1395, 'grad_norm': 0.5108292102813721, 'learning_rate': 9.726027397260274e-05, 'epoch': 0.27}
+{'loss': 0.1444, 'grad_norm': 0.3490299880504608, 'learning_rate': 9.67123287671233e-05, 'epoch': 0.29}
+{'loss': 0.1433, 'grad_norm': 0.39360567927360535, 'learning_rate': 9.616438356164384e-05, 'epoch': 0.32}
+{'loss': 0.1403, 'grad_norm': 0.3183213472366333, 'learning_rate': 9.561643835616438e-05, 'epoch': 0.35}
+{'loss': 0.131, 'grad_norm': 0.28818267583847046, 'learning_rate': 9.506849315068494e-05, 'epoch': 0.37}
+{'loss': 0.1347, 'grad_norm': 0.3154635727405548, 'learning_rate': 9.452054794520548e-05, 'epoch': 0.4}
+{'loss': 0.1431, 'grad_norm': 0.3402199149131775, 'learning_rate': 9.397260273972604e-05, 'epoch': 0.43}
+{'loss': 0.1333, 'grad_norm': 0.5747342109680176, 'learning_rate': 9.342465753424658e-05, 'epoch': 0.45}
+{'loss': 0.1436, 'grad_norm': 0.2461322396993637, 'learning_rate': 9.287671232876712e-05, 'epoch': 0.48}
+{'loss': 0.1383, 'grad_norm': 0.4054989814758301, 'learning_rate': 9.232876712328768e-05, 'epoch': 0.51}
+{'loss': 0.1446, 'grad_norm': 0.347358763217926, 'learning_rate': 9.178082191780822e-05, 'epoch': 0.53}
+Training complete for config: base

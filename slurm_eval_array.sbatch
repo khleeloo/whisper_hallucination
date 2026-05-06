@@ -1,14 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=wh_eval
-#SBATCH --partition=normal
+#SBATCH --partition=preempt
 #SBATCH --account='vemotionsys'
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
 #SBATCH --time=08:00:00
 #SBATCH -o /home/rmfrieske/whisper_hallucination/slurm_logs/%j_%a_eval.out
 #SBATCH -e /home/rmfrieske/whisper_hallucination/slurm_logs/%j_%a_eval.err
-#SBATCH --mem 80G
+#SBATCH --mem 200G
 #SBATCH --array=0-4
 
 # Array job: 0=base, 1=uu, 2=rr, 3=ru, 4=ur

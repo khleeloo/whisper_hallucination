@@ -197,8 +197,12 @@ def main():
 
     for config_name, (description, noise_fn) in noise_configs.items():
         print(f"\nCreating {config_name} ({description}) noise...")
-        if config_name in ("rr", "ru", "ur"):
+        if config_name == "rr":
             noisy_rows = noise_fn(clean_rows, n_noisy, rng, n_pairs=args.n_repeat_pairs)
+        elif config_name == "ru":
+            noisy_rows = noise_fn(clean_rows, n_noisy, rng, n_audios=args.n_repeat_pairs)
+        elif config_name == "ur":
+            noisy_rows = noise_fn(clean_rows, n_noisy, rng, n_sentences=args.n_repeat_pairs)
         else:
             noisy_rows = noise_fn(clean_rows, n_noisy, rng)
 

@@ -1,0 +1,168 @@
+% =============================================================================
+% Experimental Setup — Whisper Hallucination paper (Interspeech 2026)
+% Paste into your Overleaf project's methodology/experiments section.
+% =============================================================================
+
+\section{Experimental Setup}
+\label{sec:experiments}
+
+We investigate how different patterns and quantities of label noise during
+fine-tuning cause distinct failure modes in Whisper Large~v3.
+Our study comprises two complementary experiments: a \emph{noise-pattern}
+experiment that compares four structurally different mismatch types at a fixed
+contamination rate, and a \emph{dose--response} sweep that varies the
+contamination rate to identify the onset threshold of each failure mode.
+
+% ---------------------------------------------------------------------------
+\subsection{Data and Model}
+\label{sec:data}
+
+All experiments share a common setup.
+We draw a 120\,k-utterance subset (stratified random sample, seed\,=\,42)
+from Common Voice English~22~\cite{commonvoice}, totalling approximately
+360 hours of read speech.
+The same subset serves as the clean base for every condition, ensuring that
+differences across runs are attributable only to the injected noise.
+Development and test sets are the standard Common Voice splits (16.4\,k and
+16.4\,k utterances, respectively).
+
+We fine-tune \textbf{Whisper Large~v3}~\cite{radford2023robust} using
+LoRA~\cite{hu2022lora} with rank $r{=}16$, $\alpha{=}32$,
+dropout\,=\,0.1, applied to all attention projections and feed-forward
+layers (\texttt{q\_proj}, \texttt{k\_proj}, \texttt{v\_proj},
+\texttt{o\_proj}, \texttt{fc1}, \texttt{fc2}).
+All models train for 5 epochs with AdamW (lr\,=\,$10^{-4}$,
+500 warmup steps), per-device batch size 16, gradient accumulation 2
+(effective batch 32), fp16 mixed precision, and gradient checkpointing.
+The best checkpoint is selected by validation WER.
+
+% ---------------------------------------------------------------------------
+\subsection{Experiment~1: Noise-Pattern Comparison}
+\label{sec:exp1}
+
+We compare four structurally distinct label-noise patterns, each injected
+at a fixed 8\% contamination rate (${\sim}$9\,600 noisy utterances added
+to the 120\,k clean set), plus a clean baseline.
+Table~\ref{tab:noise-patterns} summarises the configurations.
+
+\begin{table}[t]
+\centering
+\caption{%
+  Noise-pattern configurations for Experiment~1.
+  Each adds ${\sim}$9\,600 mismatched utterances to the 120\,k clean training set.
+  \emph{Audio} and \emph{Text} columns describe the diversity of the noisy
+  portion only.
+}
+\label{tab:noise-patterns}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{@{}lllp{4.0cm}@{}}
+\toprule
+\textbf{Config} & \textbf{Audio} & \textbf{Text} & \textbf{Description} \\
+\midrule
+Base & \multicolumn{3}{l}{Clean labels only (control)} \\
+UU   & Unique   & Unique   & Each noisy sample has a distinct audio
+                              paired with a distinct unrelated sentence. \\
+RR   & Repeated & Repeated & 10 audio--text mismatch pairs, each
+                              repeated ${\sim}$960\,\texttimes. \\
+RU   & Repeated & Unique   & 10 audio clips, each time with a
+                              different unrelated sentence. \\
+UR   & Unique   & Repeated & Unique audio clips, all paired with one
+                              of 10 repeated sentences. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The four patterns probe orthogonal failure mechanisms:
+\begin{itemize}[nosep]
+  \item \textbf{UU} tests whether the model learns to \emph{hallucinate}
+        plausible but incorrect text when every noisy sample is unique.
+  \item \textbf{RR} tests whether repeated exposure to the same audio--text
+        pair causes the decoder to memorise and \emph{repeat} fixed outputs.
+  \item \textbf{RU} isolates the effect of \emph{audio repetition}: the same
+        waveform appears with many different labels, potentially destabilising
+        the encoder representation.
+  \item \textbf{UR} isolates \emph{text repetition}: the decoder sees the same
+        sentence paired with varied acoustics, potentially biasing it toward
+        high-frequency outputs.
+\end{itemize}
+
+% ---------------------------------------------------------------------------
+\subsection{Experiment~2: Dose--Response Sweep}
+\label{sec:exp2}
+
+Experiment~1 uses a single, arguably arbitrary contamination rate.
+To establish \emph{how much} noise is needed to elicit each failure mode,
+Experiment~2 sweeps the noise ratio across
+$\{1, 2, 5, 10, 20, 50\}\%$
+for the two most contrasting patterns: \textbf{UU} (diverse mismatches
+$\to$ hallucinations) and \textbf{RR} (repeated mismatches $\to$
+repetition loops).
+This yields 12 training runs plus the shared 0\% baseline, for a total
+of 13 data points per metric.
+All other hyperparameters are identical to Experiment~1.
+
+The resulting dose--response curves (Section~\ref{sec:results}) reveal
+(i) whether failure modes emerge gradually or with a sharp onset,
+(ii) the minimum contamination level that produces measurable degradation,
+and (iii) whether the two failure modes saturate at different rates.
+
+% ---------------------------------------------------------------------------
+\subsection{Evaluation Framework}
+\label{sec:eval}
+
+Each trained model is evaluated on the clean Common Voice test set using
+three complementary metrics:
+
+\paragraph{Word accuracy (WAcc).}
+$\mathrm{WAcc} = 1 - \mathrm{WER}$, computed with the \texttt{jiwer}
+library after standard text normalisation (lower-casing, punctuation removal).
+This measures \emph{lexical correctness} with respect to the ground-truth
+transcription.
+
+\paragraph{Sequence plausibility.}
+We score each hypothesis with Qwen3-1.7B~\cite{qwen3}, computing the
+mean per-token log-probability of the generated sentence.
+A plausible hallucination will have \emph{high} plausibility despite
+\emph{low} WAcc, separating it from random decoder noise.
+Using an open-source LM ensures full reproducibility.
+
+\paragraph{$N$-gram repetition rate.}
+For each hypothesis we count repeated 3-grams (trigrams appearing more
+than once) and report the fraction of test utterances containing at least
+one repeated trigram.
+This captures the \emph{looping} behaviour that characterises
+repetition-type failures.
+
+\paragraph{Input perturbation.}
+To stress-test robustness, we additionally evaluate each model under two
+acoustic perturbations applied to the test audio:
+(a)~\emph{onset noise}: additive Gaussian noise ($\sigma{=}0.1$) injected
+into the first 0.5\,s; and
+(b)~\emph{full noise}: additive noise applied to the entire waveform.
+Perturbation-induced degradation quantifies how aggressively each failure
+mode is triggered by out-of-distribution inputs.
+
+\paragraph{Summary.}
+Table~\ref{tab:experiment-summary} provides an overview of both experiments.
+
+\begin{table}[t]
+\centering
+\caption{Overview of the two experiments.}
+\label{tab:experiment-summary}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{@{}lcc@{}}
+\toprule
+                          & \textbf{Exp.\,1} & \textbf{Exp.\,2} \\
+\midrule
+Noise patterns            & UU, RR, RU, UR   & UU, RR            \\
+Noise ratios              & 8\%              & 1--50\%           \\
+Training runs             & 5                & 13                \\
+Clean training utterances & 120\,k           & 120\,k            \\
+Dev / Test utterances     & 16.4\,k / 16.4\,k & 16.4\,k / 16.4\,k \\
+Model                     & \multicolumn{2}{c}{Whisper Large v3 + LoRA} \\
+Epochs                    & \multicolumn{2}{c}{5}               \\
+Effective batch size       & \multicolumn{2}{c}{32}              \\
+Metrics                   & \multicolumn{2}{c}{WAcc, plausibility, repetition, perturbation} \\
+\bottomrule
+\end{tabular}
+\end{table}
