@@ -121,10 +121,13 @@ def transcribe_batch(model, processor, audio_paths, perturb_type="none",
 
         # Pad and batch
         input_features = torch.stack(input_features_list).to(device)
+        # Derive attention mask from non-zero frames (Whisper pad=0, eos same as pad)
+        attention_mask = (input_features.abs().sum(dim=(1, 2)) > 0).to(device)
 
         with torch.no_grad():
             predicted_ids = model.generate(
                 input_features,
+                attention_mask=attention_mask,
                 max_new_tokens=225,
                 language="en",
                 task="transcribe",
@@ -254,6 +257,10 @@ def main():
     model = PeftModel.from_pretrained(base_model, args.model_dir)
     model = model.to(device)
     model.eval()
+
+    # Clear forced_decoder_ids set by processor to avoid conflict with task=transcribe
+    model.config.forced_decoder_ids = None
+    model.config.suppress_tokens = []
 
     processor = WhisperProcessor.from_pretrained(args.base_model, language="en", task="transcribe")
 

@@ -1,0 +1,14 @@
+=== Training config: ur ===
+SLURM_ARRAY_TASK_ID: 4
+GPU: NVIDIA H800
+=== Whisper LoRA Fine-tuning: ur ===
+Train TSV: /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/ur/train.tsv
+Dev TSV: /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/dev.tsv
+Model: openai/whisper-large-v3
+LoRA r=16, alpha=32, dropout=0.1
+Loading training data...
+  Train samples: 129600
+Loading dev data...
+  Dev samples: 16400
+Processing datasets with 4 workers...
+Training FAILED for config: ur (exit 1)

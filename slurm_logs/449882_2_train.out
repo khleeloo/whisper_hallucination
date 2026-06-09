@@ -1,0 +1,9 @@
+=== Training config: rr ===
+SLURM_ARRAY_TASK_ID: 2
+GPU: NVIDIA H800
+=== Whisper LoRA Fine-tuning: rr ===
+Train TSV: /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/rr/train.tsv
+Dev TSV: /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/dev.tsv
+Model: openai/whisper-large-v3
+LoRA r=16, alpha=32, dropout=0.1
+Loading training data...

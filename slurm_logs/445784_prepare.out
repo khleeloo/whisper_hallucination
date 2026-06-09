@@ -1,0 +1,30 @@
+Loading /scratch/vemotionsys/rmfrieske/datasets/cv-corpus-22.0-2025-06-20/en/train.tsv...
+  Total training utterances: 1138422
+Creating subset of 120000 utterances...
+  Clean subset size: 120000
+  Noisy utterances per config: 9600
+  Written 120000 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/base/train.tsv
+
+Creating uu (Unique-Unique) noise...
+  Written 129600 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/uu/train.tsv
+  Written 9600 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/uu/noisy_only.tsv
+  uu: 120000 clean + 9600 noisy = 129600 total
+
+Creating rr (Repeat-Repeat) noise...
+  Written 129600 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/rr/train.tsv
+  Written 9600 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/rr/noisy_only.tsv
+  rr: 120000 clean + 9600 noisy = 129600 total
+
+Creating ru (Repeat-Unique) noise...
+  Written 129600 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/ru/train.tsv
+  Written 9600 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/ru/noisy_only.tsv
+  ru: 120000 clean + 9600 noisy = 129600 total
+
+Creating ur (Unique-Repeat) noise...
+  Written 129600 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/ur/train.tsv
+  Written 9600 rows to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/ur/noisy_only.tsv
+  ur: 120000 clean + 9600 noisy = 129600 total
+
+Experiment info saved to /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/experiment_info.txt
+Done!
+Dataset preparation complete!

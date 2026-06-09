@@ -1,0 +1,56 @@
+You have passed task=transcribe, but also have set `forced_decoder_ids` to [[1, None], [2, 50360]] which creates a conflict. `forced_decoder_ids` will be ignored in favor of task=transcribe.
+Traceback (most recent call last):
+  File "/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/transformers/utils/import_utils.py", line 1764, in _get_module
+    installation page: https://pytorch.org/get-started/locally/ and follow the ones that match your environment.
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/rmfrieske/.conda/envs/llama/lib/python3.12/importlib/__init__.py", line 90, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 999, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/transformers/trainer_callback.py", line 26, in <module>
+    from .trainer_utils import IntervalStrategy, SaveStrategy, has_length
+  File "/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/transformers/trainer_utils.py", line 37, in <module>
+    from .utils import (
+ImportError: cannot import name 'check_torch_load_is_safe' from 'transformers.utils' (/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/transformers/utils/__init__.py)
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/rmfrieske/whisper_hallucination/evaluate_whisper_validation.py", line 608, in <module>
+    main()
+  File "/home/rmfrieske/whisper_hallucination/evaluate_whisper_validation.py", line 433, in main
+    cosine_sims = compute_cosine_similarities(
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/rmfrieske/whisper_hallucination/evaluate_whisper_validation.py", line 197, in compute_cosine_similarities
+    _check_sentence_transformers()
+  File "/home/rmfrieske/whisper_hallucination/evaluate_whisper_validation.py", line 62, in _check_sentence_transformers
+    import sentence_transformers  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/sentence_transformers/__init__.py", line 14, in <module>
+    from sentence_transformers.cross_encoder.CrossEncoder import CrossEncoder
+  File "/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/sentence_transformers/cross_encoder/__init__.py", line 3, in <module>
+    from .CrossEncoder import CrossEncoder
+  File "/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/sentence_transformers/cross_encoder/CrossEncoder.py", line 18, in <module>
+    from sentence_transformers.evaluation.SentenceEvaluator import SentenceEvaluator
+  File "/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/sentence_transformers/evaluation/__init__.py", line 9, in <module>
+    from .NanoBEIREvaluator import NanoBEIREvaluator
+  File "/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/sentence_transformers/evaluation/NanoBEIREvaluator.py", line 11, in <module>
+    from sentence_transformers import SentenceTransformer
+  File "/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/sentence_transformers/SentenceTransformer.py", line 33, in <module>
+    from sentence_transformers.model_card import SentenceTransformerModelCardData, generate_model_card
+  File "/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/sentence_transformers/model_card.py", line 24, in <module>
+    from transformers import TrainerCallback
+  File "<frozen importlib._bootstrap>", line 1412, in _handle_fromlist
+  File "/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/transformers/utils/import_utils.py", line 1754, in __getattr__
+    PYTORCH_IMPORT_ERROR = """
+                         ^^^^^^
+  File "/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/transformers/utils/import_utils.py", line 1766, in _get_module
+    """
+       
+RuntimeError: Failed to import transformers.trainer_callback because of the following error (look up to see its traceback):
+cannot import name 'check_torch_load_is_safe' from 'transformers.utils' (/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/transformers/utils/__init__.py)

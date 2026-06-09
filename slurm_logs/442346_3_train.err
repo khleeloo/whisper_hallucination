@@ -1,0 +1,46 @@
+/home/rmfrieske/.local/lib/python3.11/site-packages/pandas/core/arrays/masked.py:61: UserWarning: Pandas requires version '1.3.6' or newer of 'bottleneck' (version '1.3.5' currently installed).
+  from pandas.core import (
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1780900249.222843 2319336 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1780900258.186911 2319336 cpu_feature_guard.cc:227] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX512F AVX512_VNNI AVX512_BF16 AVX512_FP16 AVX_VNNI AMX_TILE AMX_INT8 AMX_BF16 FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+Traceback (most recent call last):
+  File "/home/rmfrieske/whisper_hallucination/finetune_whisper_lora.py", line 26, in <module>
+    import evaluate
+  File "/home/rmfrieske/.local/lib/python3.11/site-packages/evaluate/__init__.py", line 29, in <module>
+    from .evaluation_suite import EvaluationSuite
+  File "/home/rmfrieske/.local/lib/python3.11/site-packages/evaluate/evaluation_suite/__init__.py", line 10, in <module>
+    from ..evaluator import evaluator
+  File "/home/rmfrieske/.local/lib/python3.11/site-packages/evaluate/evaluator/__init__.py", line 17, in <module>
+    from transformers.pipelines import SUPPORTED_TASKS as SUPPORTED_PIPELINE_TASKS
+  File "/home/rmfrieske/.local/lib/python3.11/site-packages/transformers/pipelines/__init__.py", line 26, in <module>
+    from ..image_processing_utils import BaseImageProcessor
+  File "/home/rmfrieske/.local/lib/python3.11/site-packages/transformers/image_processing_utils.py", line 28, in <module>
+    from .image_transforms import center_crop, normalize, rescale
+  File "/home/rmfrieske/.local/lib/python3.11/site-packages/transformers/image_transforms.py", line 47, in <module>
+    import tensorflow as tf
+  File "/home/rmfrieske/.local/lib/python3.11/site-packages/tensorflow/__init__.py", line 49, in <module>
+    from tensorflow._api.v2 import __internal__
+  File "/home/rmfrieske/.local/lib/python3.11/site-packages/tensorflow/_api/v2/__internal__/__init__.py", line 8, in <module>
+    from tensorflow._api.v2.__internal__ import autograph
+  File "/home/rmfrieske/.local/lib/python3.11/site-packages/tensorflow/_api/v2/__internal__/autograph/__init__.py", line 8, in <module>
+    from tensorflow.python.autograph.core.ag_ctx import control_status_ctx # line: 34
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/rmfrieske/.local/lib/python3.11/site-packages/tensorflow/python/autograph/core/ag_ctx.py", line 21, in <module>
+    from tensorflow.python.autograph.utils import ag_logging
+  File "/home/rmfrieske/.local/lib/python3.11/site-packages/tensorflow/python/autograph/utils/__init__.py", line 17, in <module>
+    from tensorflow.python.autograph.utils.context_managers import control_dependency_on_returns
+  File "/home/rmfrieske/.local/lib/python3.11/site-packages/tensorflow/python/autograph/utils/context_managers.py", line 19, in <module>
+    from tensorflow.python.framework import ops
+  File "/home/rmfrieske/.local/lib/python3.11/site-packages/tensorflow/python/framework/ops.py", line 50, in <module>
+    from tensorflow.python.eager import context
+  File "/home/rmfrieske/.local/lib/python3.11/site-packages/tensorflow/python/eager/context.py", line 38, in <module>
+    from tensorflow.python.eager import execute
+  File "/home/rmfrieske/.local/lib/python3.11/site-packages/tensorflow/python/eager/execute.py", line 21, in <module>
+    from tensorflow.python.framework import dtypes
+  File "/home/rmfrieske/.local/lib/python3.11/site-packages/tensorflow/python/framework/dtypes.py", line 786, in <module>
+    if hasattr(np.dtypes, "StringDType"):
+               ^^^^^^^^^
+  File "/cm/shared/apps/Anaconda3/2023.09-0/lib/python3.11/site-packages/numpy/__init__.py", line 320, in __getattr__
+    raise AttributeError("module {!r} has no attribute "
+AttributeError: module 'numpy' has no attribute 'dtypes'. Did you mean: 'dtype'?

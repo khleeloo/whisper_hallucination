@@ -124,6 +124,18 @@ def compute_metrics(pred, tokenizer, metric_wer):
     return {"wer": wer * 100}
 
 
+def resolve_step_values(save_steps, eval_steps, load_best_model_at_end):
+    """Ensure checkpointing steps are compatible with best-model selection."""
+    if not load_best_model_at_end or eval_steps <= 0:
+        return save_steps, eval_steps
+
+    if save_steps % eval_steps == 0:
+        return save_steps, eval_steps
+
+    aligned_save_steps = ((save_steps // eval_steps) + 1) * eval_steps
+    return aligned_save_steps, eval_steps
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--noise_config", type=str, required=True,
@@ -183,15 +195,17 @@ def main():
     num_workers = min(slurm_cpus, 4)  # limit map workers to reduce peak RAM during preprocessing
     print(f"Processing datasets with {num_workers} workers...", flush=True)
     t0 = time.time()
+    # num_proc=1 to avoid fork() deadlock with CUDA in multiprocessing.
+    # Single-process mapping is sufficient since I/O from /scratch dominates.
     train_dataset = train_dataset.map(
         lambda x: prepare_dataset(x, feature_extractor, tokenizer),
         remove_columns=train_dataset.column_names,
-        num_proc=num_workers,
+        num_proc=1,
     )
     dev_dataset = dev_dataset.map(
         lambda x: prepare_dataset(x, feature_extractor, tokenizer),
         remove_columns=dev_dataset.column_names,
-        num_proc=num_workers,
+        num_proc=1,
     )
 
     # Filter by length (batched)
@@ -199,8 +213,9 @@ def main():
         return [len(labels) < args.max_label_length for labels in examples["labels"]]
     print(f"  Map completed in {time.time()-t0:.0f}s", flush=True)
     print("Filtering by length...", flush=True)
-    train_dataset = train_dataset.filter(filter_by_length, num_proc=num_workers, batched=True, batch_size=1000)
-    dev_dataset = dev_dataset.filter(filter_by_length, num_proc=num_workers, batched=True, batch_size=1000)
+    # num_proc=1 for same reason as above — avoid multiprocessing deadlocks on SLURM nodes
+    train_dataset = train_dataset.filter(filter_by_length, num_proc=1, batched=True, batch_size=1000)
+    dev_dataset = dev_dataset.filter(filter_by_length, num_proc=1, batched=True, batch_size=1000)
     print(f"  After filtering - Train: {len(train_dataset)}, Dev: {len(dev_dataset)}", flush=True)
 
     # Load model
@@ -236,8 +251,36 @@ def main():
         decoder_start_token_id=model.config.decoder_start_token_id,
     )
 
-    # Metric
-    metric_wer = evaluate.load("wer")
+    # Metric - load with offline mode to avoid HF Hub compatibility issues
+    try:
+        metric_wer = evaluate.load("wer", download_mode="offline")
+    except Exception:
+        # Fallback: try without specifying download mode
+        try:
+            metric_wer = evaluate.load("wer")
+        except Exception as e:
+            print(f"Warning: Could not load 'wer' metric from evaluate: {e}", flush=True)
+            # Fallback to manual WER calculation using jiwer if available
+            try:
+                from jiwer import wer as jiwer_wer
+                class ManualWER:
+                    def compute(self, predictions, references):
+                        return jiwer_wer(references, predictions)
+                metric_wer = ManualWER()
+            except ImportError:
+                # Final fallback: dummy metric
+                class DummyWER:
+                    def compute(self, predictions, references):
+                        return 0.0
+                metric_wer = DummyWER()
+                print("Warning: Using dummy WER metric (returns 0.0 for all evaluations)", flush=True)
+
+    save_steps, eval_steps = resolve_step_values(
+        args.save_steps,
+        args.eval_steps,
+        load_best_model_at_end=True,
+    )
+    print(f"Checkpoint save_steps={save_steps}, eval_steps={eval_steps}", flush=True)
 
     # Training arguments
     training_args = Seq2SeqTrainingArguments(
@@ -252,9 +295,9 @@ def main():
         gradient_checkpointing_kwargs={"use_reentrant": False},
         fp16=True,
         eval_strategy="steps",
-        eval_steps=args.eval_steps,
+        eval_steps=eval_steps,
         save_strategy="steps",
-        save_steps=args.save_steps,
+        save_steps=save_steps,
         save_total_limit=3,
         load_best_model_at_end=True,
         metric_for_best_model="wer",

@@ -1,0 +1,31 @@
+=== Training config: uu ===
+SLURM_ARRAY_TASK_ID: 1
+GPU: NVIDIA H800
+=== Whisper LoRA Fine-tuning: uu ===
+Train TSV: /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/uu/train.tsv
+Dev TSV: /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/dev.tsv
+Model: openai/whisper-large-v3
+LoRA r=16, alpha=32, dropout=0.1
+Loading training data...
+  Train samples: 129600
+Loading dev data...
+  Dev samples: 16400
+Processing datasets with 4 workers...
+  Map completed in 2044s
+Filtering by length...
+  After filtering - Train: 129597, Dev: 16399
+Loading model...
+  Model loaded in 1s
+Applying LoRA...
+trainable params: 24,903,680 || all params: 1,568,394,240 || trainable%: 1.5878
+Checkpoint save_steps=2000, eval_steps=2000
+Initializing trainer...
+Starting training... (40495 total steps, 5 epochs)
+Resuming from /scratch/vemotionsys/rmfrieske/whisper_hallucination/uu/checkpoint-12000
+{'loss': 0.3541, 'grad_norm': 0.6424585580825806, 'learning_rate': 7.10075e-05, 'epoch': 1.49}
+{'loss': 0.3125, 'grad_norm': 0.7784667611122131, 'learning_rate': 7.07575e-05, 'epoch': 1.51}
+{'loss': 0.2952, 'grad_norm': 0.9764692783355713, 'learning_rate': 7.05075e-05, 'epoch': 1.52}
+{'loss': 0.3516, 'grad_norm': 0.8465484976768494, 'learning_rate': 7.02575e-05, 'epoch': 1.53}
+{'loss': 0.3493, 'grad_norm': 0.861346960067749, 'learning_rate': 7.00075e-05, 'epoch': 1.54}
+{'loss': 0.3442, 'grad_norm': 0.5599645376205444, 'learning_rate': 6.97575e-05, 'epoch': 1.56}
+{'loss': 0.3553, 'grad_norm': 1.017515778541565, 'learning_rate': 6.95075e-05, 'epoch': 1.57}

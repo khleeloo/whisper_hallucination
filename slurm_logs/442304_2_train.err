@@ -1,0 +1,16 @@
+Traceback (most recent call last):
+  File "/home/rmfrieske/whisper_hallucination/finetune_whisper_lora.py", line 33, in <module>
+    from peft import LoraConfig, get_peft_model
+  File "/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/peft/__init__.py", line 22, in <module>
+    from .auto import (
+  File "/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/peft/auto.py", line 21, in <module>
+    from transformers import (
+  File "/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/transformers/__init__.py", line 30, in <module>
+    from . import dependency_versions_check
+  File "/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/transformers/dependency_versions_check.py", line 16, in <module>
+    from .utils.versions import require_version, require_version_core
+  File "/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/transformers/utils/__init__.py", line 76, in <module>
+    from .hub import (
+  File "/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/transformers/utils/hub.py", line 29, in <module>
+    from huggingface_hub import (
+ImportError: cannot import name 'is_offline_mode' from 'huggingface_hub' (/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/huggingface_hub/__init__.py)

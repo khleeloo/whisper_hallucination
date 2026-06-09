@@ -1,0 +1,32 @@
+You have passed task=transcribe, but also have set `forced_decoder_ids` to [[1, None], [2, 50360]] which creates a conflict. `forced_decoder_ids` will be ignored in favor of task=transcribe.
+The attention mask is not set and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/transformers/tokenization_utils_base.py:1617: FutureWarning: `clean_up_tokenization_spaces` was not set. It will be set to `True` by default. This behavior will be deprecated in transformers v4.45, and will be then set to `False` by default. For more details check this issue: https://github.com/huggingface/transformers/issues/31884
+  warnings.warn(
+Batches:   0%|          | 0/257 [00:00<?, ?it/s]Batches:   0%|          | 1/257 [00:00<00:33,  7.71it/s]Batches:  12%|█▏        | 30/257 [00:00<00:01, 154.12it/s]Batches:  24%|██▍       | 62/257 [00:00<00:00, 221.98it/s]Batches:  37%|███▋      | 95/257 [00:00<00:00, 261.11it/s]Batches:  50%|█████     | 129/257 [00:00<00:00, 285.86it/s]Batches:  63%|██████▎   | 163/257 [00:00<00:00, 303.55it/s]Batches:  77%|███████▋  | 198/257 [00:00<00:00, 317.23it/s]Batches:  91%|█████████ | 234/257 [00:00<00:00, 327.58it/s]Batches: 100%|██████████| 257/257 [00:00<00:00, 283.82it/s]
+Batches:   0%|          | 0/257 [00:00<?, ?it/s]Batches:  10%|▉         | 25/257 [00:00<00:00, 244.63it/s]Batches:  22%|██▏       | 57/257 [00:00<00:00, 285.17it/s]Batches:  35%|███▌      | 90/257 [00:00<00:00, 303.95it/s]Batches:  48%|████▊     | 124/257 [00:00<00:00, 316.97it/s]Batches:  62%|██████▏   | 159/257 [00:00<00:00, 328.47it/s]Batches:  76%|███████▌  | 195/257 [00:00<00:00, 336.21it/s]Batches:  90%|████████▉ | 231/257 [00:00<00:00, 342.65it/s]Batches: 100%|██████████| 257/257 [00:00<00:00, 328.87it/s]
+Traceback (most recent call last):
+  File "/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/transformers/models/auto/configuration_auto.py", line 1023, in from_pretrained
+    config_class = CONFIG_MAPPING[config_dict["model_type"]]
+                   ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/transformers/models/auto/configuration_auto.py", line 725, in __getitem__
+    raise KeyError(key)
+KeyError: 'qwen3'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/rmfrieske/whisper_hallucination/evaluate_whisper_validation.py", line 601, in <module>
+    summary_path = os.path.join(args.output_dir, f"summary_{args.config_name}.json")
+    ^^^^^^
+  File "/home/rmfrieske/whisper_hallucination/evaluate_whisper_validation.py", line 445, in main
+    
+    
+  File "/home/rmfrieske/whisper_hallucination/evaluate_whisper_validation.py", line 250, in compute_lm_scores
+    load_kwargs = {"torch_dtype": torch_dtype}
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/transformers/models/auto/auto_factory.py", line 526, in from_pretrained
+    config, kwargs = AutoConfig.from_pretrained(
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/rmfrieske/.conda/envs/llama/lib/python3.12/site-packages/transformers/models/auto/configuration_auto.py", line 1025, in from_pretrained
+    raise ValueError(
+ValueError: The checkpoint you are trying to load has model type `qwen3` but Transformers does not recognize this architecture. This could be because of an issue with the checkpoint, or because your version of Transformers is out of date.

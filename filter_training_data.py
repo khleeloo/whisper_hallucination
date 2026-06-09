@@ -57,8 +57,11 @@ def transcribe(model, processor, audio_paths, clips_dir, device, batch_size):
                                             return_tensors="pt").input_features[0]
             feats.append(f)
         inputs = torch.stack(feats).to(device)
+        # Derive attention mask from non-zero frames (Whisper pad=0, eos same as pad)
+        attention_mask = (inputs.abs().sum(dim=(1, 2)) > 0).to(device)
         with torch.no_grad():
-            ids = model.generate(inputs, max_new_tokens=225, language="en", task="transcribe")
+            ids = model.generate(inputs, attention_mask=attention_mask,
+                                 max_new_tokens=225, language="en", task="transcribe")
         hyps.extend(processor.tokenizer.batch_decode(ids, skip_special_tokens=True))
         if (start // batch_size) % 20 == 0:
             print(f"  transcribed {min(start + batch_size, len(audio_paths))}/{len(audio_paths)}")
@@ -88,6 +91,10 @@ def main():
     print("Loading base Whisper (no LoRA) for filtering")
     model = WhisperForConditionalGeneration.from_pretrained(args.base_model,
                                                              torch_dtype=torch.float16).to(device).eval()
+    # Clear forced_decoder_ids set by processor to avoid conflict with task=transcribe
+    model.config.forced_decoder_ids = None
+    model.config.suppress_tokens = []
+
     processor = WhisperProcessor.from_pretrained(args.base_model, language="en", task="transcribe")
 
     audio_paths = [r["path"] for r in rows]
