@@ -22,6 +22,7 @@ import csv
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -32,7 +33,7 @@ import evaluate
 import numpy as np
 import torch
 from dataclasses import dataclass
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 from datasets import Audio, Dataset
 from peft import LoraConfig, get_peft_model
@@ -51,6 +52,7 @@ from transformers.models.whisper.english_normalizer import BasicTextNormalizer
 
 normalizer = BasicTextNormalizer()
 EXPECTED_CACHE_COLUMNS = {"input_features", "labels", "label_length"}
+CHECKPOINT_RE = re.compile(r"^checkpoint-(\d+)$")
 
 
 def _is_rank_zero() -> bool:
@@ -150,25 +152,118 @@ class DataCollatorSpeechSeq2SeqWithPadding:
         return batch
 
 
+def checkpoint_step(checkpoint_name: str) -> Optional[int]:
+    """Return the numeric training step for checkpoint-N directories."""
+    match = CHECKPOINT_RE.match(os.path.basename(checkpoint_name))
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _has_adapter_files(checkpoint_dir: str) -> bool:
+    return (
+        os.path.exists(os.path.join(checkpoint_dir, "adapter_config.json"))
+        and (
+            os.path.exists(os.path.join(checkpoint_dir, "adapter_model.safetensors"))
+            or os.path.exists(os.path.join(checkpoint_dir, "adapter_model.bin"))
+        )
+    )
+
+
+def _checkpoint_resume_issue(checkpoint_dir: str) -> Optional[str]:
+    if not os.path.isdir(checkpoint_dir):
+        return "not a directory"
+    if checkpoint_step(os.path.basename(checkpoint_dir)) is None:
+        return "not a numeric checkpoint directory"
+    if not _has_adapter_files(checkpoint_dir):
+        return "missing adapter config or weights"
+    if not os.path.exists(os.path.join(checkpoint_dir, "trainer_state.json")):
+        return "missing trainer_state.json"
+    if not os.path.exists(os.path.join(checkpoint_dir, "optimizer.pt")):
+        return "missing optimizer.pt"
+    if not os.path.exists(os.path.join(checkpoint_dir, "scheduler.pt")):
+        return "missing scheduler.pt"
+    return None
+
+
+def numeric_checkpoint_dirs(output_dir: str):
+    """Return numeric checkpoint dirs as (step, name, path), sorted oldest to newest."""
+    if not os.path.isdir(output_dir):
+        return []
+
+    checkpoints = []
+    for entry in os.listdir(output_dir):
+        step = checkpoint_step(entry)
+        if step is None:
+            continue
+        path = os.path.join(output_dir, entry)
+        if os.path.isdir(path):
+            checkpoints.append((step, entry, path))
+    return sorted(checkpoints)
+
+
+def _best_checkpoint_name_from_state(checkpoint_dir: str) -> Optional[str]:
+    trainer_state_path = os.path.join(checkpoint_dir, "trainer_state.json")
+    try:
+        with open(trainer_state_path, "r", encoding="utf-8") as f:
+            trainer_state = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    best_checkpoint = trainer_state.get("best_model_checkpoint")
+    if not best_checkpoint:
+        return None
+    best_name = os.path.basename(best_checkpoint)
+    if checkpoint_step(best_name) is None:
+        return None
+    return best_name
+
+
+def find_best_resume_checkpoint(output_dir: str) -> Optional[str]:
+    """Find the saved best numeric checkpoint complete enough for Trainer resume."""
+    complete_checkpoints = {}
+    for _, name, path in reversed(numeric_checkpoint_dirs(output_dir)):
+        issue = _checkpoint_resume_issue(path)
+        if issue is not None:
+            print(f"  Skipping incomplete checkpoint for resume ({issue}): {name}", flush=True)
+            continue
+
+        complete_checkpoints[name] = path
+        best_name = _best_checkpoint_name_from_state(path)
+        best_path = complete_checkpoints.get(best_name)
+        if best_path:
+            return best_path
+
+    if complete_checkpoints:
+        return next(iter(complete_checkpoints.values()))
+    return None
+
+
+def cleanup_numeric_checkpoints(output_dir: str, keep_names) -> None:
+    """Delete numeric checkpoint dirs except those explicitly kept."""
+    keep_names = {name for name in keep_names if name}
+    for _, entry, path in numeric_checkpoint_dirs(output_dir):
+        if entry not in keep_names:
+            shutil.rmtree(path, ignore_errors=True)
+
+
 class CheckpointCleanupCallback(TrainerCallback):
-    """Keep only current checkpoint, checkpoint-last, and checkpoint-best."""
+    """Keep only the best numeric checkpoint once best-model tracking is available."""
 
     def on_save(self, args, state, control, **kwargs):
         if not state.is_world_process_zero:
             return
 
         output_dir = args.output_dir
-        keep_dirs = {"checkpoint-last", "checkpoint-best"}
+        keep_dirs = set()
         if state.best_model_checkpoint:
-            keep_dirs.add(os.path.basename(state.best_model_checkpoint))
-        if state.global_step:
+            best_name = os.path.basename(state.best_model_checkpoint)
+            if checkpoint_step(best_name) is not None:
+                keep_dirs.add(best_name)
+        if not keep_dirs and state.global_step:
             keep_dirs.add(f"checkpoint-{state.global_step}")
 
-        for entry in os.listdir(output_dir):
-            if entry.startswith("checkpoint-") and entry not in keep_dirs:
-                path = os.path.join(output_dir, entry)
-                if os.path.isdir(path):
-                    shutil.rmtree(path, ignore_errors=True)
+        cleanup_numeric_checkpoints(output_dir, keep_dirs)
 
 
 def compute_metrics(pred, tokenizer, metric_wer):
@@ -710,8 +805,11 @@ def main():
                 metric_wer = DummyWER()
                 print("Warning: Using dummy WER metric (returns 0.0 for all evaluations)", flush=True)
 
-    save_steps = args.save_steps
-    eval_steps = args.eval_steps
+    save_steps, eval_steps = resolve_step_values(
+        args.save_steps,
+        args.eval_steps,
+        load_best_model_at_end=True,
+    )
     print(f"Checkpoint save_steps={save_steps}, eval_steps={eval_steps}", flush=True)
 
     # Training arguments
@@ -770,32 +868,36 @@ def main():
     # Train (resume from checkpoint if available)
     n_steps = len(train_dataset) // (args.train_batch_size * args.gradient_accumulation_steps) * args.num_epochs
     print(f"Starting training... ({n_steps} total steps, {args.num_epochs} epochs)", flush=True)
-    resume_ckpt = None
-    if os.path.isdir(args.output_dir):
-        checkpoints = [d for d in os.listdir(args.output_dir) if d.startswith("checkpoint-")]
-        # Sort by step descending; pick first one that has model weights (not a corrupted stub)
-        checkpoints_sorted = sorted(checkpoints, key=lambda x: int(x.split("-")[1]), reverse=True)
-        for ckpt_name in checkpoints_sorted:
-            ckpt_path = os.path.join(args.output_dir, ckpt_name)
-            adapter_config = os.path.join(ckpt_path, "adapter_config.json")
-            if os.path.exists(adapter_config):
-                resume_ckpt = ckpt_path
-                print(f"Resuming from {resume_ckpt}", flush=True)
-                break
-            else:
-                print(f"  Skipping incomplete checkpoint (missing adapter_config.json): {ckpt_name}", flush=True)
+    existing_checkpoints = numeric_checkpoint_dirs(args.output_dir)
+    resume_ckpt = find_best_resume_checkpoint(args.output_dir)
+    if resume_ckpt:
+        print(f"Resuming from {resume_ckpt}", flush=True)
+    elif existing_checkpoints:
+        raise RuntimeError(
+            "Found numeric checkpoint directories, but none are complete enough "
+            "for Trainer resume. Refusing to restart from the base model in the "
+            f"same output_dir: {args.output_dir}"
+        )
     trainer.train(resume_from_checkpoint=resume_ckpt)
 
     # Clean up intermediate checkpoints after successful training.
-    # Keep only the best checkpoint for long-term storage.
+    # Keep only the best numeric checkpoint for auditability/resume. The final/
+    # adapter saved below is also the in-memory best model because
+    # load_best_model_at_end=True.
     if not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0:
-        best_ckpt_dir = os.path.join(args.output_dir, "checkpoint-best")
-        keep_dir = "checkpoint-best" if os.path.isdir(best_ckpt_dir) else "checkpoint-last"
-        for entry in os.listdir(args.output_dir):
-            if entry.startswith("checkpoint-") and entry != keep_dir:
-                path = os.path.join(args.output_dir, entry)
-                if os.path.isdir(path):
-                    shutil.rmtree(path, ignore_errors=True)
+        checkpoints = numeric_checkpoint_dirs(args.output_dir)
+        best_name = None
+        if trainer.state.best_model_checkpoint:
+            candidate = os.path.basename(trainer.state.best_model_checkpoint)
+            if checkpoint_step(candidate) is not None:
+                best_name = candidate
+        if best_name is None and checkpoints:
+            best_name = checkpoints[-1][1]
+        keep_names = {best_name}
+        cleanup_numeric_checkpoints(args.output_dir, keep_names)
+        kept = ", ".join(sorted(name for name in keep_names if name))
+        if kept:
+            print(f"Kept best checkpoint dir: {kept}", flush=True)
 
     if not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0:
 

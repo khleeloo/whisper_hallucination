@@ -46,8 +46,15 @@ echo "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader)"
 if [ ! -d "${MODEL_DIR}" ]; then
     echo "ERROR: Model dir not found: ${MODEL_DIR}"
     echo "Checking for checkpoint instead..."
-    # Try latest checkpoint if final/ doesn't exist
-    LATEST_CKPT=$(ls -d ${SCRATCH}/${CONFIG}/checkpoint-* 2>/dev/null | sort -V | tail -1)
+    # Try latest complete numeric adapter checkpoint if final/ doesn't exist.
+    LATEST_CKPT=""
+    while IFS= read -r candidate; do
+        if [ -f "${candidate}/adapter_config.json" ] && \
+           { [ -f "${candidate}/adapter_model.safetensors" ] || [ -f "${candidate}/adapter_model.bin" ]; }; then
+            LATEST_CKPT="${candidate}"
+            break
+        fi
+    done < <(find "${SCRATCH}/${CONFIG}" -maxdepth 1 -type d -name 'checkpoint-[0-9]*' 2>/dev/null | sort -V -r)
     if [ -n "${LATEST_CKPT}" ]; then
         echo "Using checkpoint: ${LATEST_CKPT}"
         MODEL_DIR=${LATEST_CKPT}

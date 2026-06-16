@@ -26,18 +26,25 @@ CONFIG=${CONFIGS[$SLURM_ARRAY_TASK_ID]}
 CONDITION="${CONFIG%%_*}"
 MODEL_DIR="${BASE_DIR}/${CONFIG}"
 
-# Find the best checkpoint: look for 'final' first, then highest checkpoint number
+# Find final adapter first, then checkpoint-best, then newest numeric adapter checkpoint.
 if [ -d "${MODEL_DIR}/final" ]; then
     CKPT_DIR="${MODEL_DIR}/final"
     CKPT_NAME="final"
-elif [ -d "${MODEL_DIR}/checkpoint-best" ]; then
+elif [ -f "${MODEL_DIR}/checkpoint-best/adapter_config.json" ] && \
+     { [ -f "${MODEL_DIR}/checkpoint-best/adapter_model.safetensors" ] || [ -f "${MODEL_DIR}/checkpoint-best/adapter_model.bin" ]; }; then
     CKPT_DIR="${MODEL_DIR}/checkpoint-best"
     CKPT_NAME=$(basename "${CKPT_DIR}")
 else
-    # Find checkpoint with highest number
-    CKPT_DIR=$(ls -d "${MODEL_DIR}"/checkpoint-* 2>/dev/null | sort -t- -k2 -n | tail -1)
+    CKPT_DIR=""
+    while IFS= read -r candidate; do
+        if [ -f "${candidate}/adapter_config.json" ] && \
+           { [ -f "${candidate}/adapter_model.safetensors" ] || [ -f "${candidate}/adapter_model.bin" ]; }; then
+            CKPT_DIR="${candidate}"
+            break
+        fi
+    done < <(find "${MODEL_DIR}" -maxdepth 1 -type d -name 'checkpoint-[0-9]*' 2>/dev/null | sort -V -r)
     if [ -z "${CKPT_DIR}" ]; then
-        echo "ERROR: No checkpoint found in ${MODEL_DIR}"
+        echo "ERROR: No complete adapter checkpoint found in ${MODEL_DIR}"
         exit 1
     fi
     CKPT_NAME=$(basename "${CKPT_DIR}")

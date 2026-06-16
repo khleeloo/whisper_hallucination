@@ -456,32 +456,8 @@ def main():
     print(f"  Device: {device}", flush=True)
     print(f"  LM models: {args.lm_models}", flush=True)
 
-    # --- Resolve model directory (fall back to previous checkpoint if target is incomplete) ---
+    # --- Resolve model directory ---
     model_dir = args.model_dir
-    adapter_config_path = os.path.join(model_dir, "adapter_config.json")
-    if not os.path.exists(adapter_config_path):
-        # Check if this is a checkpoint-NNNN path that was corrupted during save
-        m = re.search(r"(.*/checkpoint-)(\d+)$", model_dir)
-        if m:
-            prefix = m.group(1)
-            step = int(m.group(2))
-            fallback_step = step - 1000
-            if fallback_step >= 0:
-                fallback_dir = f"{prefix}{fallback_step}"
-                fallback_config = os.path.join(fallback_dir, "adapter_config.json")
-                if os.path.exists(fallback_config):
-                    print(f"  WARNING: {adapter_config_path} not found (checkpoint was corrupted during save).", flush=True)
-                    print(f"  Falling back to previous checkpoint: {fallback_dir}", flush=True)
-                    model_dir = fallback_dir
-                else:
-                    print(f"  ERROR: {adapter_config_path} not found, and fallback {fallback_config} also not found.", flush=True)
-                    sys.exit(1)
-            else:
-                print(f"  ERROR: {adapter_config_path} not found, and no earlier checkpoint to fall back to.", flush=True)
-                sys.exit(1)
-        else:
-            print(f"  ERROR: {adapter_config_path} not found in {model_dir}", flush=True)
-            sys.exit(1)
     try:
         validate_adapter_files(model_dir)
     except Exception as exc:
