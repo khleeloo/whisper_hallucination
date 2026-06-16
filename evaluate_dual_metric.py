@@ -2,7 +2,8 @@
 Evaluate Whisper models with dual-metric framework:
   1. Lexical accuracy (WAcc = 1 - WER)
   2. Sequence plausibility (LM-based sentence probability)
-  3. Repetition analysis (n-gram repetition counts)
+  3. Hallucination-like outputs (above-average plausibility + below-average WAcc)
+  4. Repetition analysis (n-gram repetition counts)
 
 Also supports perturbation-based evaluation (noise injection).
 
@@ -325,13 +326,15 @@ def main():
     print(f"\n  WER: {wer:.4f}")
     print(f"  WAcc: {wacc:.4f}")
 
-    # Per-sample WER for joint analysis (use jiwer directly, no evaluate cache)
+    # Per-sample WER/WAcc for joint analysis. WAcc follows the paper exactly:
+    # WAcc = 1 - WER, without clipping negative values for insertion-heavy cases.
     import jiwer
     per_sample_wer = [
         jiwer.wer(r, h) if len(r) > 0 else 1.0
         for h, r in zip(norm_hyps, norm_refs)
     ]
     per_sample_wacc = [1.0 - w for w in per_sample_wer]
+    avg_sample_wacc = float(np.mean(per_sample_wacc)) if per_sample_wacc else 0.0
 
     # --- Metric 2: Sequence Plausibility (LM scoring) ---
     # Determine LM models to use
@@ -372,6 +375,26 @@ def main():
     avg_plausibility = all_lm_results[first_lm]["avg_plausibility"]
     avg_raw_plausibility = all_lm_results[first_lm]["avg_raw_plausibility"]
 
+    # Paper hallucination-like criterion: above-average sentence probability
+    # and below-average WAcc within this evaluation set.
+    hallucination_like = [
+        (np_score > avg_plausibility) and (sample_wacc < avg_sample_wacc)
+        for np_score, sample_wacc in zip(norm_plausibility, per_sample_wacc)
+    ]
+    hallucination_like_count = sum(hallucination_like)
+    hallucination_like_rate = (
+        hallucination_like_count / len(hallucination_like)
+        if hallucination_like
+        else 0.0
+    )
+    print(
+        "  Hallucination-like: "
+        f"{hallucination_like_count}/{len(hallucination_like)} "
+        f"({hallucination_like_rate:.4f}); "
+        f"thresholds: norm_plausibility>{avg_plausibility:.4f}, "
+        f"wacc<{avg_sample_wacc:.4f}"
+    )
+
     # --- Metric 3: BLEU ---
     print("\nComputing BLEU scores...")
     bleu_scores = compute_bleu_scores(norm_hyps, norm_refs)
@@ -410,8 +433,13 @@ def main():
         "n_samples": len(samples),
         "wer": round(wer, 4),
         "wacc": round(wacc, 4),
+        "mean_sample_wacc": round(avg_sample_wacc, 4),
         "avg_normalized_plausibility": round(avg_plausibility, 4),
         "avg_raw_plausibility": round(avg_raw_plausibility, 4),
+        "hallucination_like_count": hallucination_like_count,
+        "hallucination_like_rate": round(hallucination_like_rate, 4),
+        "hallucination_wacc_threshold": round(avg_sample_wacc, 4),
+        "hallucination_plausibility_threshold": round(avg_plausibility, 4),
         "mean_bleu": round(mean_bleu, 4),
         "sentences_with_bigram_repeats": sentences_with_reps_2,
         "sentences_with_trigram_repeats": sentences_with_reps_3,
@@ -428,15 +456,23 @@ def main():
     details_path = os.path.join(args.output_dir, f"details_{args.config_name}_{perturb_tag}.tsv")
     with open(details_path, "w", newline="") as f:
         writer = csv.writer(f, delimiter="\t")
-        writer.writerow(["reference", "hypothesis", "wacc", "plausibility", "norm_plausibility",
-                         "2gram_reps", "3gram_reps", "4gram_reps"])
+        writer.writerow([
+            "reference", "hypothesis", "wer", "wacc", "plausibility",
+            "norm_plausibility", "hallucination_like",
+            "hallucination_wacc_threshold", "hallucination_plausibility_threshold",
+            "2gram_reps", "3gram_reps", "4gram_reps",
+        ])
         for i in range(len(norm_hyps)):
             reps = compute_repetitions(norm_hyps[i])
             writer.writerow([
                 norm_refs[i], norm_hyps[i],
+                f"{per_sample_wer[i]:.4f}",
                 f"{per_sample_wacc[i]:.4f}",
                 f"{hyp_plausibility[i]:.4f}",
                 f"{norm_plausibility[i]:.4f}",
+                int(hallucination_like[i]),
+                f"{avg_sample_wacc:.4f}",
+                f"{avg_plausibility:.4f}",
                 reps["2gram_repeats"], reps["3gram_repeats"], reps["4gram_repeats"],
             ])
     print(f"Per-sample details saved to {details_path}")
@@ -446,6 +482,7 @@ def main():
     print(f"  Config: {args.config_name} | Perturbation: {perturb_tag}")
     print(f"  WAcc:          {wacc:.4f}")
     print(f"  Plausibility:  {avg_plausibility:.4f}")
+    print(f"  Hall-like:     {hallucination_like_rate:.4f}")
     print(f"  Bigram reps:   {sentences_with_reps_2}")
     print(f"  Trigram reps:  {sentences_with_reps_3}")
     print(f"  4-gram reps:   {sentences_with_reps_4}")
