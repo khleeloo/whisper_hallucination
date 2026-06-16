@@ -23,7 +23,7 @@ python evaluate_whisper_validation.py \
     --test_tsv /scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/test.tsv \
     --clips_dir /scratch/vemotionsys/rmfrieske/datasets/cv-corpus-22.0-2025-06-20/en/clips \
     --output_dir /scratch/vemotionsys/rmfrieske/whisper_hallucination/eval_validation \
-    --config_name base_ckpt14000 \
+    --config_name base_checkpoint-14000 \
     --noise_condition base \
     --noise_ratio 0.08 \
     --batch_size 8 \

@@ -23,6 +23,7 @@ OUTPUT_DIR="/scratch/vemotionsys/rmfrieske/whisper_hallucination/eval_24pct"
 
 CONFIGS=("rr_24pct" "ru_24pct")
 CONFIG=${CONFIGS[$SLURM_ARRAY_TASK_ID]}
+CONDITION="${CONFIG%%_*}"
 MODEL_DIR="${BASE_DIR}/${CONFIG}"
 
 # Find the best checkpoint: look for 'final' first, then highest checkpoint number
@@ -31,7 +32,7 @@ if [ -d "${MODEL_DIR}/final" ]; then
     CKPT_NAME="final"
 elif [ -d "${MODEL_DIR}/checkpoint-best" ]; then
     CKPT_DIR="${MODEL_DIR}/checkpoint-best"
-    CKPT_NAME="best"
+    CKPT_NAME=$(basename "${CKPT_DIR}")
 else
     # Find checkpoint with highest number
     CKPT_DIR=$(ls -d "${MODEL_DIR}"/checkpoint-* 2>/dev/null | sort -t- -k2 -n | tail -1)
@@ -52,7 +53,7 @@ python evaluate_whisper_validation.py \
     --clips_dir "${CLIPS_DIR}" \
     --output_dir "${OUTPUT_DIR}" \
     --config_name "${CONFIG}_${CKPT_NAME}" \
-    --noise_condition "${CONFIG}" \
+    --noise_condition "${CONDITION}" \
     --noise_ratio 0.24 \
     --batch_size 8 \
     --lm_models gpt2 Qwen/Qwen3-0.6B
