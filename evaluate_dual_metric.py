@@ -93,41 +93,41 @@ def transcribe_batch(model, processor, audio_paths, perturb_type="none",
 
     for batch_start in range(0, len(audio_paths), batch_size):
         batch_paths = audio_paths[batch_start:batch_start + batch_size]
-        input_features_list = []
+        waveforms = []
 
         for path in batch_paths:
             waveform, sample_rate = torchaudio.load(path)
+
             # Resample to 16kHz if needed
             if sample_rate != 16000:
                 resampler = torchaudio.transforms.Resample(sample_rate, 16000)
                 waveform = resampler(waveform)
-                sample_rate = 16000
 
             # Apply perturbation
             waveform = apply_perturbation(
-                waveform, sample_rate, perturb_type, perturb_amplitude, perturb_duration
+                waveform, 16000, perturb_type, perturb_amplitude, perturb_duration
             )
 
             # Convert to mono if stereo
             if waveform.shape[0] > 1:
                 waveform = waveform.mean(dim=0, keepdim=True)
 
-            features = processor.feature_extractor(
-                waveform.squeeze().numpy(),
-                sampling_rate=16000,
-                return_tensors="pt",
-            ).input_features[0]
-            input_features_list.append(features)
+            waveforms.append(waveform.squeeze().numpy())
 
-        # Pad and batch
-        input_features = torch.stack(input_features_list).to(device)
-        # Derive attention mask from non-zero frames (Whisper pad=0, eos same as pad)
-        attention_mask = (input_features.abs().sum(dim=(1, 2)) > 0).to(device)
+        # Batch feature extraction (significantly faster than per-file)
+        input_features = processor.feature_extractor(
+            waveforms,
+            sampling_rate=16000,
+            return_tensors="pt",
+            padding=True,
+            return_attention_mask=True,
+        )
+        input_features = input_features.to(device)
 
         with torch.no_grad():
             predicted_ids = model.generate(
-                input_features,
-                attention_mask=attention_mask,
+                input_features["input_features"],
+                attention_mask=input_features.get("attention_mask", None),
                 max_new_tokens=225,
                 language="en",
                 task="transcribe",
@@ -140,6 +140,24 @@ def transcribe_batch(model, processor, audio_paths, perturb_type="none",
             print(f"  Transcribed {min(batch_start + batch_size, len(audio_paths))}/{len(audio_paths)}")
 
     return hypotheses
+
+
+def compute_bleu_scores(hypotheses, references):
+    """Compute sentence-level BLEU-4 with smoothing via sacrebleu."""
+    import sacrebleu
+
+    results = []
+    for hyp, ref in zip(hypotheses, references):
+        if not hyp.strip():
+            results.append(0.0)
+            continue
+        bleu_val = sacrebleu.sentence_bleu(
+            hyp, [ref], smooth_method="exp"
+        ).score
+        # sacrebleu returns 0-100 scale; normalize to 0-1
+        results.append(bleu_val / 100.0)
+
+    return results
 
 
 def compute_repetitions(text, min_repeats=2):
@@ -167,9 +185,13 @@ def compute_lm_perplexity(texts, model_name="Qwen/Qwen3-1.7B", device="cuda", ba
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     print(f"Loading LM ({model_name}) for plausibility scoring...")
+
+    _dtype = torch.float16 if "cuda" in device else torch.float32
+    load_kwargs = {"dtype": _dtype}
+
     lm_tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     lm_model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=torch.float16, trust_remote_code=True
+        model_name, trust_remote_code=True, **load_kwargs
     ).to(device)
     lm_model.eval()
 
@@ -230,6 +252,8 @@ def main():
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--lm_model", type=str, default="Qwen/Qwen3-1.7B",
                         help="Language model for plausibility scoring")
+    parser.add_argument("--lm_models", type=str, nargs="*", default=None,
+                        help="Multiple language models for plausibility scoring")
 
     # Perturbation args
     parser.add_argument("--perturb_type", type=str, default="none",
@@ -251,9 +275,7 @@ def main():
 
     # Load model
     print("Loading model...")
-    base_model = WhisperForConditionalGeneration.from_pretrained(
-        args.base_model, torch_dtype=torch.float16
-    )
+    base_model = WhisperForConditionalGeneration.from_pretrained(args.base_model)
     model = PeftModel.from_pretrained(base_model, args.model_dir)
     model = model.to(device)
     model.eval()
@@ -303,35 +325,60 @@ def main():
     print(f"\n  WER: {wer:.4f}")
     print(f"  WAcc: {wacc:.4f}")
 
-    # Per-sample WER for joint analysis
-    per_sample_wer = []
-    for h, r in zip(norm_hyps, norm_refs):
-        if len(r) > 0:
-            sample_wer = metric_wer.compute(predictions=[h], references=[r])
-            per_sample_wer.append(sample_wer)
-        else:
-            per_sample_wer.append(1.0)
+    # Per-sample WER for joint analysis (use jiwer directly, no evaluate cache)
+    import jiwer
+    per_sample_wer = [
+        jiwer.wer(r, h) if len(r) > 0 else 1.0
+        for h, r in zip(norm_hyps, norm_refs)
+    ]
     per_sample_wacc = [1.0 - w for w in per_sample_wer]
 
     # --- Metric 2: Sequence Plausibility (LM scoring) ---
-    print("\nComputing sequence plausibility...")
-    hyp_plausibility = compute_lm_perplexity(norm_hyps, model_name=args.lm_model, device=device)
-    ref_plausibility = compute_lm_perplexity(norm_refs, model_name=args.lm_model, device=device)
+    # Determine LM models to use
+    lm_models = args.lm_models if args.lm_models else [args.lm_model]
 
-    # Normalized plausibility (hypothesis / reference), clipped to [0, 1]
-    norm_plausibility = []
-    for hp, rp in zip(hyp_plausibility, ref_plausibility):
-        if rp > 0:
-            norm_plausibility.append(min(hp / rp, 1.0))
-        else:
-            norm_plausibility.append(0.0)
+    all_lm_results = {}
+    for lm_name in lm_models:
+        lm_short = lm_name.split("/")[-1]
+        print(f"\nComputing sequence plausibility with {lm_short}...")
+        hyp_plausibility = compute_lm_perplexity(norm_hyps, model_name=lm_name, device=device)
+        ref_plausibility = compute_lm_perplexity(norm_refs, model_name=lm_name, device=device)
 
-    avg_plausibility = np.mean(norm_plausibility)
-    avg_raw_plausibility = np.mean(hyp_plausibility)
-    print(f"  Avg normalized plausibility: {avg_plausibility:.4f}")
-    print(f"  Avg raw plausibility: {avg_raw_plausibility:.4f}")
+        # Normalized plausibility (hypothesis / reference), clipped to [0, 1]
+        norm_plausibility = []
+        for hp, rp in zip(hyp_plausibility, ref_plausibility):
+            if rp > 0:
+                norm_plausibility.append(min(hp / rp, 1.0))
+            else:
+                norm_plausibility.append(0.0)
 
-    # --- Metric 3: Repetition Analysis ---
+        avg_plausibility = np.mean(norm_plausibility)
+        avg_raw_plausibility = np.mean(hyp_plausibility)
+        print(f"  {lm_short} avg normalized plausibility: {avg_plausibility:.4f}")
+        print(f"  {lm_short} avg raw plausibility: {avg_raw_plausibility:.4f}")
+
+        all_lm_results[lm_short] = {
+            "hyp_plausibility": hyp_plausibility,
+            "ref_plausibility": ref_plausibility,
+            "norm_plausibility": norm_plausibility,
+            "avg_plausibility": avg_plausibility,
+            "avg_raw_plausibility": avg_raw_plausibility,
+        }
+
+    # Use first LM's results for per-sample output
+    first_lm = list(all_lm_results.keys())[0]
+    hyp_plausibility = all_lm_results[first_lm]["hyp_plausibility"]
+    norm_plausibility = all_lm_results[first_lm]["norm_plausibility"]
+    avg_plausibility = all_lm_results[first_lm]["avg_plausibility"]
+    avg_raw_plausibility = all_lm_results[first_lm]["avg_raw_plausibility"]
+
+    # --- Metric 3: BLEU ---
+    print("\nComputing BLEU scores...")
+    bleu_scores = compute_bleu_scores(norm_hyps, norm_refs)
+    mean_bleu = np.mean(bleu_scores)
+    print(f"  Mean BLEU: {mean_bleu:.4f}")
+
+    # --- Metric 4: Repetition Analysis ---
     print("\nAnalyzing repetitions...")
     total_rep_2gram = 0
     total_rep_3gram = 0
@@ -365,6 +412,7 @@ def main():
         "wacc": round(wacc, 4),
         "avg_normalized_plausibility": round(avg_plausibility, 4),
         "avg_raw_plausibility": round(avg_raw_plausibility, 4),
+        "mean_bleu": round(mean_bleu, 4),
         "sentences_with_bigram_repeats": sentences_with_reps_2,
         "sentences_with_trigram_repeats": sentences_with_reps_3,
         "sentences_with_4gram_repeats": sentences_with_reps_4,

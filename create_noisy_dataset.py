@@ -206,8 +206,11 @@ def main():
         else:
             noisy_rows = noise_fn(clean_rows, n_noisy, rng)
 
-        # Combine clean + noisy
-        combined = list(clean_rows) + noisy_rows
+        # Substitute: replace a fraction of clean rows with noisy mismatches.
+        # Dataset stays same total size as the clean baseline.
+        n_keep = len(clean_rows) - n_noisy
+        kept_clean = rng.sample(clean_rows, n_keep)
+        combined = kept_clean + noisy_rows
         rng.shuffle(combined)
 
         config_dir = os.path.join(args.output_dir, config_name)
@@ -217,7 +220,7 @@ def main():
         # Save noisy subset separately for analysis
         write_tsv(os.path.join(config_dir, "noisy_only.tsv"), fieldnames, noisy_rows)
 
-        print(f"  {config_name}: {len(clean_rows)} clean + {len(noisy_rows)} noisy = {len(combined)} total")
+        print(f"  {config_name}: {n_keep} clean + {len(noisy_rows)} noisy = {len(combined)} total ({int(args.noise_ratio*100)}% noise, same size)")
 
     # Save metadata
     meta_path = os.path.join(args.output_dir, "experiment_info.txt")

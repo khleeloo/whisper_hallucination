@@ -228,62 +228,65 @@ def compute_cosine_similarities(hypotheses, references, model_name="all-MiniLM-L
 # --- Metric 3-5: Multi-LM Fluency Scoring ---
 
 
-def compute_lm_scores(texts, model_name, device="cuda", batch_size=8):
+def compute_lm_scores_cached(texts, model, tokenizer, device="cuda", batch_size=8):
     """
-    Compute sentence probability scores using a causal LM.
+    Compute sentence probability scores using an already-loaded causal LM.
+    Caller handles model loading/unloading.
     Returns list of sentence_score = exp(-avg_token_nll).
     """
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-
-    print(f"  Loading LM: {model_name} ...", flush=True)
-    t0 = time.time()
-
-    # Determine dtype and loading strategy
-    if "7b" in model_name.lower() or "7B" in model_name:
-        torch_dtype = torch.float16
-        load_kwargs = {"torch_dtype": torch_dtype, "device_map": "auto"}
-    elif "70b" in model_name.lower() or "70B" in model_name:
-        torch_dtype = torch.float16
-        load_kwargs = {"torch_dtype": torch_dtype, "device_map": "auto", "load_in_4bit": True}
-    else:
-        torch_dtype = torch.float16 if "cuda" in device else torch.float32
-        load_kwargs = {"torch_dtype": torch_dtype}
-
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, trust_remote_code=True, **load_kwargs
-    )
-    model.eval()
-
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    print(f"  Loaded {model_name} in {time.time() - t0:.0f}s", flush=True)
 
     scores = []
     nlls = []
     for batch_start in range(0, len(texts), batch_size):
         batch_texts = texts[batch_start:batch_start + batch_size]
-        batch_scores = []
-        batch_nlls = []
 
-        for text in batch_texts:
+        # Filter out empty texts
+        valid_indices = []
+        valid_texts = []
+        for idx, text in enumerate(batch_texts):
             text = text.strip()
-            if not text:
-                batch_scores.append(1e-8)
-                batch_nlls.append(20.0)
-                continue
+            if text:
+                valid_indices.append(idx)
+                valid_texts.append(text)
 
-            encodings = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
-            input_ids = {k: v.to(model.device) for k, v in encodings.items()}
+        # Initialize scores for all positions in the batch
+        batch_scores = [1e-8] * len(batch_texts)
+        batch_nlls = [20.0] * len(batch_texts)
+
+        if valid_texts:
+            # Batch-tokenize: pad to longest in batch
+            encodings = tokenizer(
+                valid_texts,
+                return_tensors="pt",
+                truncation=True,
+                max_length=512,
+                padding=True,
+            )
+            encodings = {k: v.to(model.device) for k, v in encodings.items()}
 
             with torch.no_grad():
-                outputs = model(**input_ids, labels=input_ids["input_ids"])
-                nll = outputs.loss.item()
+                outputs = model(**encodings, labels=encodings["input_ids"])
+                nll_batch = outputs.loss.item()
 
-            prob_score = np.exp(-nll)
-            batch_scores.append(prob_score)
-            batch_nlls.append(nll)
+            # Cross-entropy loss is averaged over all non-pad tokens in the batch
+            # Split to per-sequence NLL for each valid text
+            per_seq_nlls = []
+            loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
+            logits = outputs.logits
+
+            for i in range(len(valid_texts)):
+                seq_len = (encodings["attention_mask"][i] == 1).sum().item()
+                if seq_len <= 1:
+                    per_seq_nlls.append(20.0)
+                    continue
+                shift_logits = logits[i, :seq_len - 1, :]
+                shift_labels = encodings["input_ids"][i, 1:seq_len]
+                nll_val = loss_fct(shift_logits, shift_labels).mean().item()
+                per_seq_nlls.append(nll_val)
+
+            for idx, nll_val in zip(valid_indices, per_seq_nlls):
+                batch_scores[idx] = np.exp(-nll_val)
+                batch_nlls[idx] = nll_val
 
         scores.extend(batch_scores)
         nlls.extend(batch_nlls)
@@ -291,14 +294,35 @@ def compute_lm_scores(texts, model_name, device="cuda", batch_size=8):
         if (batch_start // batch_size) % 10 == 0:
             print(f"    Scored {min(batch_start + batch_size, len(texts))}/{len(texts)}", flush=True)
 
-    # Free memory
-    del model
-    torch.cuda.empty_cache()
-
     return scores, nlls
 
 
 # --- Metric 6: N-gram Repetition ---
+
+
+# --- Metric 7: BLEU ---
+
+
+def compute_bleu_scores(hypotheses, references):
+    """Compute sentence-level BLEU-4 with smoothing via sacrebleu."""
+    import sacrebleu
+
+    results = []
+    for hyp, ref in zip(hypotheses, references):
+        hyp_norm = normalize_text(hyp)
+        ref_norm = normalize_text(ref)
+
+        if not hyp_norm.strip():
+            results.append(0.0)
+            continue
+
+        bleu_val = sacrebleu.sentence_bleu(
+            hyp_norm, [ref_norm], smooth_method="exp"
+        ).score
+        # sacrebleu returns 0-100 scale; normalize to 0-1
+        results.append(bleu_val / 100.0)
+
+    return results
 
 
 def compute_repetition_metrics(text):
@@ -377,13 +401,40 @@ def main():
     print(f"  Device: {device}", flush=True)
     print(f"  LM models: {args.lm_models}", flush=True)
 
+    # --- Resolve model directory (fall back to previous checkpoint if target is incomplete) ---
+    model_dir = args.model_dir
+    adapter_config_path = os.path.join(model_dir, "adapter_config.json")
+    if not os.path.exists(adapter_config_path):
+        # Check if this is a checkpoint-NNNN path that was corrupted during save
+        m = re.search(r"(.*/checkpoint-)(\d+)$", model_dir)
+        if m:
+            prefix = m.group(1)
+            step = int(m.group(2))
+            fallback_step = step - 1000
+            if fallback_step >= 0:
+                fallback_dir = f"{prefix}{fallback_step}"
+                fallback_config = os.path.join(fallback_dir, "adapter_config.json")
+                if os.path.exists(fallback_config):
+                    print(f"  WARNING: {adapter_config_path} not found (checkpoint was corrupted during save).", flush=True)
+                    print(f"  Falling back to previous checkpoint: {fallback_dir}", flush=True)
+                    model_dir = fallback_dir
+                else:
+                    print(f"  ERROR: {adapter_config_path} not found, and fallback {fallback_config} also not found.", flush=True)
+                    sys.exit(1)
+            else:
+                print(f"  ERROR: {adapter_config_path} not found, and no earlier checkpoint to fall back to.", flush=True)
+                sys.exit(1)
+        else:
+            print(f"  ERROR: {adapter_config_path} not found in {model_dir}", flush=True)
+            sys.exit(1)
+
     # --- Load Whisper model ---
     print("\nLoading Whisper model...", flush=True)
     t0 = time.time()
     base_model = WhisperForConditionalGeneration.from_pretrained(
-        args.base_model, torch_dtype=torch.float16
+        args.base_model, dtype=torch.float16
     )
-    model = PeftModel.from_pretrained(base_model, args.model_dir)
+    model = PeftModel.from_pretrained(base_model, model_dir)
     model = model.to(device)
     model.eval()
 
@@ -443,21 +494,42 @@ def main():
         norm_refs = [normalize_text(r) for r in references]
         norm_hyps = [normalize_text(h) for h in hypotheses]
 
+        # Load each LM once and score both hyps + refs
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
         for lm_name in args.lm_models:
             lm_short = lm_name.split("/")[-1]
             print(f"\n=== LM Scoring: {lm_name} ===", flush=True)
 
-            # Score hypotheses
+            # Load LM once
+            print(f"  Loading LM: {lm_name} ...", flush=True)
+            t0 = time.time()
+            _dtype = torch.float16 if "cuda" in device else torch.float32
+            load_kwargs = {"dtype": _dtype}
+            tokenizer = AutoTokenizer.from_pretrained(lm_name, trust_remote_code=True)
+            lm_model = AutoModelForCausalLM.from_pretrained(
+                lm_name, trust_remote_code=True, **load_kwargs
+            )
+            lm_model.eval()
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+            print(f"  Loaded in {time.time() - t0:.0f}s", flush=True)
+
+            # Score hypotheses (reuse loaded model)
             print("  Scoring hypotheses...", flush=True)
-            hyp_scores, hyp_nlls = compute_lm_scores(
-                norm_hyps, model_name=lm_name, device=device, batch_size=4
+            hyp_scores, hyp_nlls = compute_lm_scores_cached(
+                norm_hyps, lm_model, tokenizer, device=device, batch_size=4
             )
 
-            # Score references
+            # Score references (reuse loaded model)
             print("  Scoring references...", flush=True)
-            ref_scores, ref_nlls = compute_lm_scores(
-                norm_refs, model_name=lm_name, device=device, batch_size=4
+            ref_scores, ref_nlls = compute_lm_scores_cached(
+                norm_refs, lm_model, tokenizer, device=device, batch_size=4
             )
+
+            # Free LM
+            del lm_model
+            torch.cuda.empty_cache()
 
             # Normalized scores: hyp_score / ref_score, clipped to [0, 1]
             norm_scores = []
@@ -476,6 +548,12 @@ def main():
 
             mean_norm = np.mean(norm_scores)
             print(f"  Mean normalized score ({lm_short}): {mean_norm:.4f}", flush=True)
+
+    # --- BLEU ---
+    print("\nComputing BLEU scores...", flush=True)
+    bleu_scores = compute_bleu_scores(hypotheses, references)
+    mean_bleu = np.mean(bleu_scores)
+    print(f"  Mean BLEU: {mean_bleu:.4f}", flush=True)
 
     # --- Repetition ---
     print("\nComputing repetition metrics...", flush=True)
@@ -514,6 +592,8 @@ def main():
             ])
 
     # Repetition columns
+    bleu_cols = ["bleu"]
+
     rep_cols = [
         "bigram_rep_count", "trigram_rep_count", "fourgram_rep_count",
         "has_bigram_rep", "has_trigram_rep", "has_fourgram_rep",
@@ -522,7 +602,7 @@ def main():
     # Decoded text columns
     text_cols = ["decoded_text_raw", "decoded_text_normalized"]
 
-    all_columns = base_columns + wer_detail_cols + cosine_cols + lm_cols + rep_cols + text_cols
+    all_columns = base_columns + wer_detail_cols + cosine_cols + lm_cols + bleu_cols + rep_cols + text_cols
 
     output_path = os.path.join(args.output_dir, f"per_utterance_{args.config_name}.csv")
     with open(output_path, "w", newline="", encoding="utf-8") as f:
@@ -546,6 +626,7 @@ def main():
                 "num_ref_words": wer_results[i]["num_ref_words"],
                 "num_hyp_words": wer_results[i]["num_hyp_words"],
                 "cosine_similarity": cosine_sims[i],
+                "bleu": bleu_scores[i],
                 "bigram_rep_count": rep_results[i]["bigram_rep_count"],
                 "trigram_rep_count": rep_results[i]["trigram_rep_count"],
                 "fourgram_rep_count": rep_results[i]["fourgram_rep_count"],
@@ -576,6 +657,7 @@ def main():
     print(f"  Cosine sim: {np.mean(cosine_sims):.4f}")
     for lm_short, lm_data in lm_scores.items():
         print(f"  Fluency ({lm_short}): {np.mean(lm_data['norm_scores']):.4f}")
+    print(f"  BLEU:   {mean_bleu:.4f}")
     print(f"  Bigram reps:  {mean_bigram:.2f}")
     print(f"  Trigram reps: {mean_trigram:.2f}")
     print(f"  Fourgram reps: {mean_fourgram:.2f}")
@@ -591,6 +673,7 @@ def main():
         "mean_wer": float(mean_wer),
         "mean_wacc": float(mean_wacc),
         "mean_cosine_similarity": float(np.mean(cosine_sims)),
+        "mean_bleu": float(mean_bleu),
         "mean_bigram_rep": float(mean_bigram),
         "mean_trigram_rep": float(mean_trigram),
         "mean_fourgram_rep": float(mean_fourgram),

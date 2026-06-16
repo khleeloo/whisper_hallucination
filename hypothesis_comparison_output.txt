@@ -1,0 +1,16 @@
+/home/rmfrieske/.local/lib/python3.11/site-packages/pandas/core/arrays/masked.py:61: UserWarning: Pandas requires version '1.3.6' or newer of 'bottleneck' (version '1.3.5' currently installed).
+  from pandas.core import (
+Shapes:
+  base: (16396, 32)
+  rr64: (16396, 32)
+  ru64: (16396, 32)
+
+rr64
+  merged count: 16396
+  exact same hypotheses: 0.0003
+  mean absolute WAcc diff: 0.0364
+
+ru64
+  merged count: 16396
+  exact same hypotheses: 0.0003
+  mean absolute WAcc diff: 0.0363
