@@ -224,7 +224,9 @@ def compute_wer_metrics(hypotheses, references):
 
         measures = jiwer.compute_measures(ref_norm, hyp_norm)
         wer_val = measures["wer"]
-        wacc_val = max(0.0, 1.0 - wer_val)
+        # Paper definition: WAcc = 1 - WER. Do not clamp insertion-heavy
+        # utterances; negative values are valid under this definition.
+        wacc_val = 1.0 - wer_val
 
         results.append({
             "wer": wer_val,
