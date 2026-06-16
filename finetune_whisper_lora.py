@@ -873,7 +873,7 @@ def main():
         compute_metrics=lambda pred: compute_metrics(pred, tokenizer, metric_wer),
         tokenizer=tokenizer,
         callbacks=[
-            EarlyStoppingCallback(early_stopping_patience=1, early_stopping_threshold=0.001),
+            EarlyStoppingCallback(early_stopping_patience=3, early_stopping_threshold=0.001),
             CheckpointCleanupCallback(),
         ],
     )
