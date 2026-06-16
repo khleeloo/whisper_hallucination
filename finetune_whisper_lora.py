@@ -19,6 +19,8 @@ Usage:
 
 import argparse
 import csv
+import hashlib
+import json
 import os
 import shutil
 import sys
@@ -203,6 +205,59 @@ def _resolve_num_workers(args) -> int:
     return max(1, min(raw, 4))
 
 
+def _file_fingerprint(path):
+    hasher = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    stat = os.stat(path)
+    return {
+        "path": os.path.abspath(path),
+        "size": stat.st_size,
+        "sha256": hasher.hexdigest(),
+    }
+
+
+def _build_cache_metadata(train_tsv, dev_tsv, model_name, max_label_length):
+    return {
+        "version": 1,
+        "train_tsv": _file_fingerprint(train_tsv),
+        "dev_tsv": _file_fingerprint(dev_tsv),
+        "model_name": model_name,
+        "max_label_length": max_label_length,
+    }
+
+
+def _cache_metadata_path(train_cache):
+    return os.path.join(
+        os.path.dirname(train_cache),
+        f"meta_{os.path.basename(train_cache)}.json",
+    )
+
+
+def _cache_metadata_matches(train_cache, expected_metadata):
+    meta_path = _cache_metadata_path(train_cache)
+    if not os.path.exists(meta_path):
+        print("Cache metadata missing - re-preprocessing...", flush=True)
+        return False
+    try:
+        with open(meta_path, "r", encoding="utf-8") as f:
+            actual_metadata = json.load(f)
+    except Exception:
+        print("Cache metadata unreadable - re-preprocessing...", flush=True)
+        return False
+    if actual_metadata != expected_metadata:
+        print("Cache metadata mismatch - re-preprocessing...", flush=True)
+        return False
+    return True
+
+
+def _write_cache_metadata(train_cache, cache_metadata):
+    meta_path = _cache_metadata_path(train_cache)
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(cache_metadata, f, indent=2, sort_keys=True)
+
+
 def _preprocess_dataset_cached(
     train_dataset,
     dev_dataset,
@@ -212,6 +267,7 @@ def _preprocess_dataset_cached(
     dev_cache,
     max_label_length,
     num_proc,
+    cache_metadata,
 ):
     """Run map + filter and save to cache.
 
@@ -267,6 +323,7 @@ def _preprocess_dataset_cached(
     # Save to cache for subsequent GPU ranks
     train_dataset.save_to_disk(train_cache)
     dev_dataset.save_to_disk(dev_cache)
+    _write_cache_metadata(train_cache, cache_metadata)
     print(f"  Cached to {os.path.dirname(train_cache)}", flush=True)
     return train_dataset, dev_dataset
 
@@ -280,10 +337,15 @@ def _load_or_preprocess(
     dev_cache,
     max_label_length,
     num_proc,
+    cache_metadata,
 ):
     """Load from cache if valid, otherwise preprocess (rank-0-only under DDP)."""
     # Quick check: if cache exists and looks healthy, load it on every rank
-    if os.path.exists(train_cache) and os.path.exists(dev_cache):
+    if (
+        os.path.exists(train_cache)
+        and os.path.exists(dev_cache)
+        and _cache_metadata_matches(train_cache, cache_metadata)
+    ):
         try:
             train_tmp = Dataset.load_from_disk(train_cache)
             dev_tmp = Dataset.load_from_disk(dev_cache)
@@ -305,6 +367,10 @@ def _load_or_preprocess(
             shutil.rmtree(train_cache, ignore_errors=True)
             shutil.rmtree(dev_cache, ignore_errors=True)
 
+    elif os.path.exists(train_cache) or os.path.exists(dev_cache):
+        shutil.rmtree(train_cache, ignore_errors=True)
+        shutil.rmtree(dev_cache, ignore_errors=True)
+
     # --- Single-worker protocol: only rank 0 runs the map; others poll. ---
     # Use a temp-file lock so overlapping rank-0 runs on different filesystems
     # don't race.
@@ -320,7 +386,11 @@ def _load_or_preprocess(
             fcntl.flock(lf, fcntl.LOCK_EX)
             try:
                 # Double-check after acquiring lock (another rank 0 may have raced)
-                if os.path.exists(train_cache) and os.path.exists(dev_cache):
+                if (
+                    os.path.exists(train_cache)
+                    and os.path.exists(dev_cache)
+                    and _cache_metadata_matches(train_cache, cache_metadata)
+                ):
                     try:
                         train_tmp = Dataset.load_from_disk(train_cache)
                         dev_tmp = Dataset.load_from_disk(dev_cache)
@@ -338,6 +408,7 @@ def _load_or_preprocess(
                     dev_cache,
                     max_label_length,
                     num_proc,
+                    cache_metadata,
                 )
                 return result
             finally:
@@ -350,7 +421,11 @@ def _load_or_preprocess(
             flush=True,
         )
         waited = 0
-        while not (os.path.exists(train_cache) and os.path.exists(dev_cache)):
+        while not (
+            os.path.exists(train_cache)
+            and os.path.exists(dev_cache)
+            and _cache_metadata_matches(train_cache, cache_metadata)
+        ):
             time.sleep(30)
             waited += 30
             if waited > 0 and waited % 300 == 0:
@@ -424,6 +499,12 @@ def main():
     cache_dir = os.path.join(args.output_dir, ".dataset_cache")
     train_cache = os.path.join(cache_dir, f"train_{args.noise_config}")
     dev_cache = os.path.join(cache_dir, f"dev_{args.noise_config}")
+    cache_metadata = _build_cache_metadata(
+        train_tsv,
+        dev_tsv,
+        args.model_name,
+        args.max_label_length,
+    )
 
     num_proc = _resolve_num_workers(args)
     train_dataset, dev_dataset = _load_or_preprocess(
@@ -435,6 +516,7 @@ def main():
         dev_cache,
         args.max_label_length,
         num_proc,
+        cache_metadata,
     )
 
     # All ranks synchronise after preprocessing / cache load

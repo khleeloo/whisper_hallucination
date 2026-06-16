@@ -35,7 +35,12 @@ import os, sys, time
 os.environ['CUDA_VISIBLE_DEVICES'] = ''
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 sys.path.insert(0, '/home/rmfrieske/whisper_hallucination')
-from finetune_whisper_lora import load_cv_dataset_from_tsv, prepare_dataset
+from finetune_whisper_lora import (
+    _build_cache_metadata,
+    _write_cache_metadata,
+    load_cv_dataset_from_tsv,
+    prepare_dataset,
+)
 from datasets import Dataset
 from transformers import WhisperFeatureExtractor, WhisperTokenizer
 import multiprocessing
@@ -79,6 +84,10 @@ dev_dataset = dev_dataset.filter(filter_by_length, num_proc=num_cpus, batched=Tr
 
 train_dataset.save_to_disk(train_cache)
 dev_dataset.save_to_disk(dev_cache)
+_write_cache_metadata(
+    train_cache,
+    _build_cache_metadata(train_tsv, dev_tsv, 'openai/whisper-large-v3', 128),
+)
 with open('${CACHE_FILE}', 'w') as f:
     f.write(f'Train: {len(train_dataset)}, Dev: {len(dev_dataset)}\n')
 print(f'Cached {len(train_dataset)} train + {len(dev_dataset)} dev samples in {time.time()-t0:.0f}s', flush=True)
