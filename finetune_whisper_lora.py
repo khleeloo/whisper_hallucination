@@ -36,6 +36,10 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
 from datasets import Audio, Dataset
+try:
+    from datasets import disable_progress_bar
+except ImportError:
+    from datasets.utils.logging import disable_progress_bar
 from peft import LoraConfig, get_peft_model
 from transformers import (
     EarlyStoppingCallback,
@@ -68,6 +72,12 @@ def _barrier():
     import torch.distributed as dist
     if dist.is_available() and dist.is_initialized():
         dist.barrier()
+
+
+def _configure_dataset_progress(show_progress: bool) -> None:
+    if not show_progress:
+        os.environ["HF_DATASETS_DISABLE_PROGRESS_BARS"] = "1"
+        disable_progress_bar()
 
 
 def load_cv_dataset_from_tsv(tsv_path, clips_dir, check_audio_exists=None):
@@ -700,7 +710,10 @@ def main():
                         help="Batch size for preprocessing map workers")
     parser.add_argument("--skip_audio_exists_check", action="store_true",
                         help="Skip per-row audio path existence checks when loading TSVs")
+    parser.add_argument("--show_preprocessing_progress", action="store_true",
+                        help="Show Hugging Face Datasets map/filter progress bars")
     args = parser.parse_args()
+    _configure_dataset_progress(args.show_preprocessing_progress)
     if args.skip_audio_exists_check:
         os.environ["WHISPER_SKIP_AUDIO_EXISTS_CHECK"] = "1"
 

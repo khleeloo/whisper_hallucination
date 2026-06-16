@@ -35,6 +35,7 @@ import os, sys, time
 os.environ['CUDA_VISIBLE_DEVICES'] = ''
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 os.environ['WHISPER_SKIP_AUDIO_EXISTS_CHECK'] = '1'
+os.environ['HF_DATASETS_DISABLE_PROGRESS_BARS'] = '1'
 sys.path.insert(0, '/home/rmfrieske/whisper_hallucination')
 from finetune_whisper_lora import (
     _build_cache_metadata,
@@ -43,8 +44,14 @@ from finetune_whisper_lora import (
     prepare_dataset_batch,
 )
 from datasets import Dataset
+try:
+    from datasets import disable_progress_bar
+except ImportError:
+    from datasets.utils.logging import disable_progress_bar
 from transformers import WhisperFeatureExtractor, WhisperTokenizer
 import multiprocessing
+
+disable_progress_bar()
 
 feature_extractor = WhisperFeatureExtractor.from_pretrained('openai/whisper-large-v3')
 tokenizer = WhisperTokenizer.from_pretrained('openai/whisper-large-v3', language='en', task='transcribe')
