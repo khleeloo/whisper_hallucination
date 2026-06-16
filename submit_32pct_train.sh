@@ -25,7 +25,7 @@ CONFIG=${CONFIGS[$SLURM_ARRAY_TASK_ID]}
 
 DATA_DIR="/scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination_32pct"
 CLIPS_DIR="/scratch/vemotionsys/rmfrieske/datasets/cv-corpus-22.0-2025-06-20/en/clips"
-OUTPUT_DIR="/scratch/vemotionsys/rmfrieske/whisper_hallucination/${CONFIG}_32"
+OUTPUT_DIR="/scratch/vemotionsys/rmfrieske/whisper_hallucination/${CONFIG}_32pct"
 
 echo "=== Training ${CONFIG} with 32% noise on 4 GPUs ==="
 echo "Data dir: ${DATA_DIR}"
@@ -52,7 +52,7 @@ torchrun --nproc_per_node=4 --master_port=${MASTER_PORT} \
     --seed 42
 
 EXIT_CODE=$?
-echo "=== Done: ${CONFIG}_32 (exit code: $EXIT_CODE) ==="
+echo "=== Done: ${CONFIG}_32pct (exit code: $EXIT_CODE) ==="
 SBATCH_SCRIPT
 
 echo "32% training array jobs submitted."
