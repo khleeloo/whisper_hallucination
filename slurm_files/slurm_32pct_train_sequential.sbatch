@@ -27,19 +27,20 @@ echo "Data dir: ${DATA_DIR}"
 echo "Output dir: ${OUTPUT_DIR}"
 
 # Step 1: Preprocess dataset ONCE using all CPUs (single process, no CUDA context)
-CACHE_FILE="${OUTPUT_DIR}/.dataset_cache_${CONFIG}_done"
+CACHE_FILE="${OUTPUT_DIR}/.dataset_cache_${CONFIG}_v2_done"
 if [ ! -f "${CACHE_FILE}" ]; then
     echo "=== Preprocessing dataset (multi-proc, one-time) ==="
     python -c "
 import os, sys, time, csv, multiprocessing
 os.environ['CUDA_VISIBLE_DEVICES'] = ''
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+os.environ['WHISPER_SKIP_AUDIO_EXISTS_CHECK'] = '1'
 sys.path.insert(0, '/home/rmfrieske/whisper_hallucination')
 from finetune_whisper_lora import (
     _build_cache_metadata,
     _write_cache_metadata,
     load_cv_dataset_from_tsv,
-    prepare_dataset,
+    prepare_dataset_batch,
 )
 from datasets import Dataset
 from transformers import WhisperFeatureExtractor, WhisperTokenizer
@@ -64,20 +65,24 @@ print(f'Preprocessing with {num_cpus} workers...', flush=True)
 t0 = time.time()
 
 train_dataset = train_dataset.map(
-    lambda x: prepare_dataset(x, feature_extractor, tokenizer),
+    lambda x: prepare_dataset_batch(x, feature_extractor, tokenizer),
     remove_columns=train_dataset.column_names,
     num_proc=num_cpus,
+    batched=True,
+    batch_size=16,
     writer_batch_size=1000,
 )
 dev_dataset = dev_dataset.map(
-    lambda x: prepare_dataset(x, feature_extractor, tokenizer),
+    lambda x: prepare_dataset_batch(x, feature_extractor, tokenizer),
     remove_columns=dev_dataset.column_names,
     num_proc=num_cpus,
+    batched=True,
+    batch_size=16,
     writer_batch_size=1000,
 )
 
 def filter_by_length(examples):
-    return [len(labels) < 128 for labels in examples['labels']]
+    return [length < 128 for length in examples['label_length']]
 train_dataset = train_dataset.filter(filter_by_length, num_proc=num_cpus, batched=True, batch_size=1000, writer_batch_size=1000)
 dev_dataset = dev_dataset.filter(filter_by_length, num_proc=num_cpus, batched=True, batch_size=1000, writer_batch_size=1000)
 
@@ -114,6 +119,8 @@ torchrun --nproc_per_node=4 --master_port="${MASTER_PORT}" \
     --lora_alpha 64 \
     --save_steps 2000 \
     --eval_steps 2000 \
+    --skip_audio_exists_check \
+    --preprocessing_batch_size 16 \
     --seed 42
 
 EXIT_CODE=$?

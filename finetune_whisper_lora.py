@@ -50,6 +50,7 @@ from transformers.models.whisper.english_normalizer import BasicTextNormalizer
 
 
 normalizer = BasicTextNormalizer()
+EXPECTED_CACHE_COLUMNS = {"input_features", "labels", "label_length"}
 
 
 def _is_rank_zero() -> bool:
@@ -67,14 +68,16 @@ def _barrier():
         dist.barrier()
 
 
-def load_cv_dataset_from_tsv(tsv_path, clips_dir):
+def load_cv_dataset_from_tsv(tsv_path, clips_dir, check_audio_exists=None):
     """Load Common Voice data from a TSV file into a HuggingFace Dataset."""
+    if check_audio_exists is None:
+        check_audio_exists = os.environ.get("WHISPER_SKIP_AUDIO_EXISTS_CHECK") != "1"
     rows = []
     with open(tsv_path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f, delimiter="\t")
         for row in reader:
             audio_path = os.path.join(clips_dir, row["path"])
-            if os.path.exists(audio_path):
+            if not check_audio_exists or os.path.exists(audio_path):
                 rows.append({
                     "audio": audio_path,
                     "sentence": row["sentence"],
@@ -96,6 +99,24 @@ def prepare_dataset(example, feature_extractor, tokenizer):
     example["labels"] = sentence
     example["label_length"] = len(tokenizer(sentence).input_ids)
     return example
+
+
+def prepare_dataset_batch(examples, feature_extractor, tokenizer):
+    """Batch audio feature extraction and label normalization for faster mapping."""
+    audios = examples["audio"]
+    sampling_rate = audios[0]["sampling_rate"] if audios else 16000
+    input_features = feature_extractor(
+        [audio["array"] for audio in audios],
+        sampling_rate=sampling_rate,
+    ).input_features
+
+    sentences = [normalizer(sentence).strip() for sentence in examples["sentence"]]
+    tokenized = tokenizer(sentences)
+    return {
+        "input_features": input_features,
+        "labels": sentences,
+        "label_length": [len(ids) for ids in tokenized.input_ids],
+    }
 
 
 @dataclass
@@ -202,7 +223,7 @@ def _resolve_num_workers(args) -> int:
             raw = len(os.sched_getaffinity(0))
         except AttributeError:
             raw = multiprocessing.cpu_count()
-    return max(1, min(raw, 4))
+    return max(1, min(raw, 8))
 
 
 def _file_fingerprint(path):
@@ -220,7 +241,7 @@ def _file_fingerprint(path):
 
 def _build_cache_metadata(train_tsv, dev_tsv, model_name, max_label_length):
     return {
-        "version": 1,
+        "version": 2,
         "train_tsv": _file_fingerprint(train_tsv),
         "dev_tsv": _file_fingerprint(dev_tsv),
         "model_name": model_name,
@@ -258,6 +279,39 @@ def _write_cache_metadata(train_cache, cache_metadata):
         json.dump(cache_metadata, f, indent=2, sort_keys=True)
 
 
+def _load_valid_cached_datasets(train_cache, dev_cache, cache_metadata):
+    if not (
+        os.path.exists(train_cache)
+        and os.path.exists(dev_cache)
+        and _cache_metadata_matches(train_cache, cache_metadata)
+    ):
+        return None
+    try:
+        train_tmp = Dataset.load_from_disk(train_cache)
+        dev_tmp = Dataset.load_from_disk(dev_cache)
+    except Exception:
+        print("Cache read error - re-preprocessing...", flush=True)
+        return None
+    if (
+        EXPECTED_CACHE_COLUMNS.issubset(train_tmp.column_names)
+        and EXPECTED_CACHE_COLUMNS.issubset(dev_tmp.column_names)
+        and len(train_tmp) > 0
+        and len(dev_tmp) > 0
+    ):
+        print("Loading preprocessed datasets from cache...", flush=True)
+        return train_tmp, dev_tmp
+    print("Cache invalid - re-preprocessing...", flush=True)
+    return None
+
+
+def _remove_preprocessed_cache(train_cache, dev_cache):
+    shutil.rmtree(train_cache, ignore_errors=True)
+    shutil.rmtree(dev_cache, ignore_errors=True)
+    meta_path = _cache_metadata_path(train_cache)
+    if os.path.exists(meta_path):
+        os.remove(meta_path)
+
+
 def _preprocess_dataset_cached(
     train_dataset,
     dev_dataset,
@@ -268,6 +322,7 @@ def _preprocess_dataset_cached(
     max_label_length,
     num_proc,
     cache_metadata,
+    preprocessing_batch_size=16,
 ):
     """Run map + filter and save to cache.
 
@@ -279,15 +334,19 @@ def _preprocess_dataset_cached(
     t0 = time.time()
 
     train_dataset = train_dataset.map(
-        lambda x: prepare_dataset(x, feature_extractor, tokenizer),
+        lambda x: prepare_dataset_batch(x, feature_extractor, tokenizer),
         remove_columns=train_dataset.column_names,
         num_proc=num_proc,
+        batched=True,
+        batch_size=preprocessing_batch_size,
         writer_batch_size=1000,
     )
     dev_dataset = dev_dataset.map(
-        lambda x: prepare_dataset(x, feature_extractor, tokenizer),
+        lambda x: prepare_dataset_batch(x, feature_extractor, tokenizer),
         remove_columns=dev_dataset.column_names,
         num_proc=num_proc,
+        batched=True,
+        batch_size=preprocessing_batch_size,
         writer_batch_size=1000,
     )
     print(f"  Map completed in {time.time()-t0:.0f}s", flush=True)
@@ -296,13 +355,7 @@ def _preprocess_dataset_cached(
     print("Filtering by length...", flush=True)
 
     def filter_by_length(examples):
-        lengths = []
-        for labels in examples["labels"]:
-            if isinstance(labels, str):
-                lengths.append(len(tokenizer(labels).input_ids))
-            else:
-                lengths.append(len(labels))
-        return [length < max_label_length for length in lengths]
+        return [length < max_label_length for length in examples["label_length"]]
 
     train_dataset = train_dataset.filter(
         filter_by_length,
@@ -338,6 +391,7 @@ def _load_or_preprocess(
     max_label_length,
     num_proc,
     cache_metadata,
+    preprocessing_batch_size=16,
 ):
     """Load from cache if valid, otherwise preprocess (rank-0-only under DDP)."""
     # Quick check: if cache exists and looks healthy, load it on every rank
@@ -409,6 +463,7 @@ def _load_or_preprocess(
                     max_label_length,
                     num_proc,
                     cache_metadata,
+                    preprocessing_batch_size,
                 )
                 return result
             finally:
@@ -437,6 +492,83 @@ def _load_or_preprocess(
             flush=True,
         )
         return train_tmp, dev_tmp
+
+
+def _load_or_preprocess_fast(
+    train_tsv,
+    dev_tsv,
+    clips_dir,
+    feature_extractor,
+    tokenizer,
+    train_cache,
+    dev_cache,
+    max_label_length,
+    num_proc,
+    cache_metadata,
+    preprocessing_batch_size,
+):
+    """Load cache before touching raw TSV/audio; only rank 0 preprocesses on miss."""
+    cached = _load_valid_cached_datasets(train_cache, dev_cache, cache_metadata)
+    if cached is not None:
+        return cached
+    if os.path.exists(train_cache) or os.path.exists(dev_cache):
+        _remove_preprocessed_cache(train_cache, dev_cache)
+
+    lock_dir = os.path.join(tempfile.gettempdir(), ".whisper_lora_preproc_locks")
+    os.makedirs(lock_dir, exist_ok=True)
+    lock_path = os.path.join(lock_dir, os.path.basename(train_cache) + ".lock")
+
+    if _is_rank_zero():
+        with open(lock_path, "w") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            try:
+                cached = _load_valid_cached_datasets(train_cache, dev_cache, cache_metadata)
+                if cached is not None:
+                    return cached
+                if os.path.exists(train_cache) or os.path.exists(dev_cache):
+                    _remove_preprocessed_cache(train_cache, dev_cache)
+
+                print("Loading training data...", flush=True)
+                train_dataset = load_cv_dataset_from_tsv(train_tsv, clips_dir)
+                print(f"  Train samples: {len(train_dataset)}", flush=True)
+                print("Loading dev data...", flush=True)
+                dev_dataset = load_cv_dataset_from_tsv(dev_tsv, clips_dir)
+                print(f"  Dev samples: {len(dev_dataset)}", flush=True)
+
+                return _preprocess_dataset_cached(
+                    train_dataset,
+                    dev_dataset,
+                    feature_extractor,
+                    tokenizer,
+                    train_cache,
+                    dev_cache,
+                    max_label_length,
+                    num_proc,
+                    cache_metadata,
+                    preprocessing_batch_size,
+                )
+            finally:
+                fcntl.flock(lf, fcntl.LOCK_UN)
+
+    print(
+        f"Rank (non-zero) waiting for rank 0 to finish preprocessing cache at "
+        f"{train_cache}...",
+        flush=True,
+    )
+    waited = 0
+    cached = _load_valid_cached_datasets(train_cache, dev_cache, cache_metadata)
+    while cached is None:
+        time.sleep(30)
+        waited += 30
+        if waited % 300 == 0:
+            print(f"  Still waiting ... {waited}s elapsed", flush=True)
+        cached = _load_valid_cached_datasets(train_cache, dev_cache, cache_metadata)
+    train_tmp, dev_tmp = cached
+    print(
+        f"  Cache ready, loaded Train: {len(train_tmp)}, Dev: {len(dev_tmp)}",
+        flush=True,
+    )
+    return train_tmp, dev_tmp
 
 
 def main():
@@ -469,7 +601,13 @@ def main():
     parser.add_argument("--eval_steps", type=int, default=2000)
     parser.add_argument("--num_proc", type=int, default=None,
                         help="Number of map workers (default: auto-detect, capped at 8)")
+    parser.add_argument("--preprocessing_batch_size", type=int, default=16,
+                        help="Batch size for preprocessing map workers")
+    parser.add_argument("--skip_audio_exists_check", action="store_true",
+                        help="Skip per-row audio path existence checks when loading TSVs")
     args = parser.parse_args()
+    if args.skip_audio_exists_check:
+        os.environ["WHISPER_SKIP_AUDIO_EXISTS_CHECK"] = "1"
 
     # Paths
     train_tsv = os.path.join(args.data_dir, args.noise_config, "train.tsv")
@@ -486,15 +624,6 @@ def main():
     tokenizer = WhisperTokenizer.from_pretrained(args.model_name, language="en", task="transcribe")
     processor = WhisperProcessor.from_pretrained(args.model_name, language="en", task="transcribe")
 
-    # Load datasets
-    print("Loading training data...", flush=True)
-    train_dataset = load_cv_dataset_from_tsv(train_tsv, args.clips_dir)
-    print(f"  Train samples: {len(train_dataset)}", flush=True)
-
-    print("Loading dev data...", flush=True)
-    dev_dataset = load_cv_dataset_from_tsv(dev_tsv, args.clips_dir)
-    print(f"  Dev samples: {len(dev_dataset)}", flush=True)
-
     # Cache paths for preprocessed data
     cache_dir = os.path.join(args.output_dir, ".dataset_cache")
     train_cache = os.path.join(cache_dir, f"train_{args.noise_config}")
@@ -507,9 +636,10 @@ def main():
     )
 
     num_proc = _resolve_num_workers(args)
-    train_dataset, dev_dataset = _load_or_preprocess(
-        train_dataset,
-        dev_dataset,
+    train_dataset, dev_dataset = _load_or_preprocess_fast(
+        train_tsv,
+        dev_tsv,
+        args.clips_dir,
         feature_extractor,
         tokenizer,
         train_cache,
@@ -517,6 +647,7 @@ def main():
         args.max_label_length,
         num_proc,
         cache_metadata,
+        args.preprocessing_batch_size,
     )
 
     # All ranks synchronise after preprocessing / cache load
