@@ -29,6 +29,7 @@ import re
 import sys
 import time
 from collections import Counter
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -43,6 +44,42 @@ from transformers.models.whisper.english_normalizer import BasicTextNormalizer
 # Optional imports — loaded lazily
 _jiwer_available = False
 _sentence_transformers_available = False
+
+
+def _normalize_config_token(text):
+    return re.sub(r"[^a-z0-9]+", "_", str(text).lower()).strip("_")
+
+
+def validate_requested_model_dir(model_dir, config_name):
+    """Catch common run-name mixups before loading an adapter."""
+    model_path = Path(model_dir).resolve()
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model directory does not exist: {model_path}")
+
+    config_token = _normalize_config_token(config_name)
+    path_tokens = {_normalize_config_token(part) for part in model_path.parts}
+    if config_token not in path_tokens:
+        raise ValueError(
+            "Model path does not match --config_name. "
+            f"config_name={config_name!r}, model_dir={str(model_path)!r}. "
+            f"Expected one path component to equal {config_token!r}."
+        )
+
+    return str(model_path)
+
+
+def validate_adapter_files(model_dir):
+    adapter_config = os.path.join(model_dir, "adapter_config.json")
+    adapter_safetensors = os.path.join(model_dir, "adapter_model.safetensors")
+    adapter_bin = os.path.join(model_dir, "adapter_model.bin")
+
+    if not os.path.exists(adapter_config):
+        raise FileNotFoundError(f"Missing adapter_config.json in resolved model_dir: {model_dir}")
+    if not (os.path.exists(adapter_safetensors) or os.path.exists(adapter_bin)):
+        raise FileNotFoundError(
+            "Missing adapter weights in resolved model_dir: "
+            f"{model_dir} (expected adapter_model.safetensors or adapter_model.bin)"
+        )
 
 
 def _check_jiwer():
@@ -396,6 +433,11 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     print(f"=== Whisper Validation Eval: {args.config_name} ===", flush=True)
+    try:
+        args.model_dir = validate_requested_model_dir(args.model_dir, args.config_name)
+    except Exception as exc:
+        print(f"  ERROR: {exc}", flush=True)
+        sys.exit(1)
     print(f"  Model: {args.model_dir}", flush=True)
     print(f"  Test set: {args.test_tsv}", flush=True)
     print(f"  Device: {device}", flush=True)
@@ -427,6 +469,12 @@ def main():
         else:
             print(f"  ERROR: {adapter_config_path} not found in {model_dir}", flush=True)
             sys.exit(1)
+    try:
+        validate_adapter_files(model_dir)
+    except Exception as exc:
+        print(f"  ERROR: {exc}", flush=True)
+        sys.exit(1)
+    print(f"  Resolved adapter: {model_dir}", flush=True)
 
     # --- Load Whisper model ---
     print("\nLoading Whisper model...", flush=True)
@@ -669,6 +717,8 @@ def main():
         "config_name": args.config_name,
         "noise_condition": args.noise_condition,
         "noise_ratio": args.noise_ratio,
+        "requested_model_dir": args.model_dir,
+        "resolved_model_dir": model_dir,
         "n_samples": len(hypotheses),
         "mean_wer": float(mean_wer),
         "mean_wacc": float(mean_wacc),

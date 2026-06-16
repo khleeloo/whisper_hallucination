@@ -67,7 +67,7 @@ def load_all_per_utterance(per_utterance_dir):
 
 
 def compute_aggregate_metrics(df):
-    """Compute per-condition aggregate metrics."""
+    """Compute per evaluated model aggregate metrics."""
     # Identify LM columns
     lm_cols = [c for c in df.columns if c.startswith("normalized_sentence_score_")]
     lm_names = [c.replace("normalized_sentence_score_", "") for c in lm_cols]
@@ -88,14 +88,23 @@ def compute_aggregate_metrics(df):
     primary_lm = strong_lms[0] if strong_lms else (weak_lms[0] if weak_lms else "gpt2")
     primary_norm_col = f"normalized_sentence_score_{primary_lm}"
 
-    # Group by noise_condition
-    conditions = df["noise_condition"].unique()
-    print(f"  Conditions: {sorted(conditions)}", flush=True)
+    # Group by evaluated model, not only noise_condition. Otherwise rr/rr_32/rr_64pct
+    # collapse into one row when their CSVs share noise_condition="rr".
+    model_names = sorted(df["model_name"].unique())
+    print(f"  Models: {model_names}", flush=True)
 
     agg_rows = []
-    for cond in sorted(conditions):
-        cond_df = df[df["noise_condition"] == cond]
-        row = {"condition": cond, "n_samples": len(cond_df)}
+    for model_name in model_names:
+        cond_df = df[df["model_name"] == model_name]
+        noise_conditions = sorted(cond_df["noise_condition"].dropna().unique())
+        noise_ratios = sorted(cond_df["noise_ratio"].dropna().unique())
+        row = {
+            "condition": model_name,
+            "model_name": model_name,
+            "noise_condition": noise_conditions[0] if len(noise_conditions) == 1 else ";".join(map(str, noise_conditions)),
+            "noise_ratio": noise_ratios[0] if len(noise_ratios) == 1 else ";".join(map(str, noise_ratios)),
+            "n_samples": len(cond_df),
+        }
 
         # WER/WAcc
         row["mean_wer"] = cond_df["wer"].mean()
@@ -150,10 +159,11 @@ def compute_hallucination_rates(df, agg_df, primary_lm, primary_norm_col):
     print(f"  WAcc Q25 (strict): {wacc_q25:.4f}", flush=True)
     print(f"  Fluency median (strict): {fluency_median:.4f}", flush=True)
 
-    # Compute per-condition hallucination rates
+    # Compute per-model hallucination rates
     hall_rates = {}
-    for cond in sorted(df["noise_condition"].unique()):
-        cond_df = df[df["noise_condition"] == cond]
+    for cond in sorted(df["model_name"].unique()):
+        cond_mask = df["model_name"] == cond
+        cond_df = df[cond_mask]
 
         # Standard definition
         hall_standard = (
@@ -177,8 +187,8 @@ def compute_hallucination_rates(df, agg_df, primary_lm, primary_norm_col):
         }
 
         # Also add hallucination flag to the main dataframe
-        df.loc[df["noise_condition"] == cond, "hallucination_like"] = hall_standard.values
-        df.loc[df["noise_condition"] == cond, "hallucination_like_strict"] = hall_strict.values
+        df.loc[cond_mask, "hallucination_like"] = hall_standard.values
+        df.loc[cond_mask, "hallucination_like_strict"] = hall_strict.values
 
     # Add to aggregate
     for row_idx in range(len(agg_df)):
@@ -206,7 +216,7 @@ def compute_baseline_deltas(agg_df):
     for _, row in agg_df.iterrows():
         drow = {"condition": row["condition"]}
         for col in agg_df.columns:
-            if col == "condition" or col == "n_samples":
+            if col in {"condition", "model_name", "noise_condition", "noise_ratio", "n_samples"}:
                 drow[col] = row[col]
                 continue
             base_val = base[col]
@@ -457,9 +467,17 @@ def build_fluency_robustness(df, agg_df, weak_lms, strong_lms, output_dir):
     rows = []
     all_lms = weak_lms + strong_lms
 
-    for cond in sorted(df["noise_condition"].unique()):
-        cond_df = df[df["noise_condition"] == cond]
-        row = {"condition": cond, "n_samples": len(cond_df)}
+    for cond in sorted(df["model_name"].unique()):
+        cond_df = df[df["model_name"] == cond]
+        noise_conditions = sorted(cond_df["noise_condition"].dropna().unique())
+        noise_ratios = sorted(cond_df["noise_ratio"].dropna().unique())
+        row = {
+            "condition": cond,
+            "model_name": cond,
+            "noise_condition": noise_conditions[0] if len(noise_conditions) == 1 else ";".join(map(str, noise_conditions)),
+            "noise_ratio": noise_ratios[0] if len(noise_ratios) == 1 else ";".join(map(str, noise_ratios)),
+            "n_samples": len(cond_df),
+        }
 
         # Get baseline thresholds for each LM
         base_df = df[df["noise_condition"] == "base"]
