@@ -237,6 +237,88 @@ def compute_lm_perplexity(texts, model_name="Qwen/Qwen3-1.7B", device="cuda", ba
     return scores
 
 
+def _shorten_for_log(text, max_chars=220):
+    text = re.sub(r"\s+", " ", str(text)).strip()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars - 3].rstrip() + "..."
+
+
+def print_qualitative_examples(
+    references,
+    hypotheses,
+    per_sample_wer,
+    per_sample_wacc,
+    norm_plausibility,
+    hallucination_like,
+    num_examples=3,
+):
+    if not hypotheses or num_examples <= 0:
+        return
+
+    mean_wacc = float(np.mean(per_sample_wacc)) if per_sample_wacc else 0.0
+    mean_plausibility = float(np.mean(norm_plausibility)) if norm_plausibility else 0.0
+
+    rows = []
+    for idx, (ref, hyp, wer, wacc, plaus, hall) in enumerate(
+        zip(
+            references,
+            hypotheses,
+            per_sample_wer,
+            per_sample_wacc,
+            norm_plausibility,
+            hallucination_like,
+        )
+    ):
+        reps = compute_repetitions(hyp)
+        rep_total = reps["2gram_repeats"] + reps["3gram_repeats"] + reps["4gram_repeats"]
+        rows.append({
+            "idx": idx,
+            "reference": ref,
+            "hypothesis": hyp,
+            "wer": wer,
+            "wacc": wacc,
+            "plausibility": plaus,
+            "rep_total": rep_total,
+            "hall_like": bool(hall),
+        })
+
+    healthy = sorted(
+        rows,
+        key=lambda r: (-r["wacc"], r["rep_total"], -r["plausibility"], r["idx"]),
+    )[:num_examples]
+
+    unhealthy_pool = [
+        r for r in rows
+        if r["hall_like"] or r["rep_total"] >= 2
+    ]
+    if not unhealthy_pool:
+        unhealthy_pool = rows
+    unhealthy = sorted(
+        unhealthy_pool,
+        key=lambda r: (
+            not r["hall_like"],
+            -r["rep_total"],
+            r["wacc"],
+            -r["plausibility"],
+            r["idx"],
+        ),
+    )[:num_examples]
+
+    print("\nQualitative examples:")
+    print(f"  Thresholds: mean WAcc={mean_wacc:.4f}, mean plausibility={mean_plausibility:.4f}")
+    for title, examples in [("Healthy", healthy), ("Unhealthy", unhealthy)]:
+        print(f"  {title} examples:")
+        for rank, row in enumerate(examples, start=1):
+            print(
+                f"    {rank}. idx={row['idx']} WAcc={row['wacc']:.4f} "
+                f"WER={row['wer']:.4f} plaus={row['plausibility']:.4f} "
+                f"reps={row['rep_total']} hall_like={int(row['hall_like'])}"
+            )
+            print(f"       REF: {_shorten_for_log(row['reference'])}")
+            print(f"       HYP: {_shorten_for_log(row['hypothesis'])}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_dir", type=str, required=True,
@@ -262,6 +344,8 @@ def main():
     parser.add_argument("--perturb_amplitude", type=float, default=0.0)
     parser.add_argument("--perturb_duration", type=float, default=0.0,
                         help="Duration of onset noise in seconds")
+    parser.add_argument("--num_log_examples", type=int, default=3,
+                        help="Number of healthy/unhealthy examples to print per run")
 
     args = parser.parse_args()
 
@@ -425,6 +509,16 @@ def main():
     print(f"  Sentences with bigram repeats: {sentences_with_reps_2}")
     print(f"  Sentences with trigram repeats: {sentences_with_reps_3}")
     print(f"  Sentences with 4-gram repeats: {sentences_with_reps_4}")
+
+    print_qualitative_examples(
+        norm_refs,
+        norm_hyps,
+        per_sample_wer,
+        per_sample_wacc,
+        norm_plausibility,
+        hallucination_like,
+        num_examples=args.num_log_examples,
+    )
 
     # --- Summary ---
     results = {

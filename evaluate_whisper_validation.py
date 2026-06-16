@@ -405,6 +405,94 @@ def compute_repetition_metrics(text):
     return results
 
 
+def _shorten_for_log(text, max_chars=220):
+    text = re.sub(r"\s+", " ", str(text)).strip()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars - 3].rstrip() + "..."
+
+
+def print_qualitative_examples(
+    references,
+    hypotheses,
+    wer_results,
+    rep_results,
+    lm_scores,
+    num_examples=3,
+):
+    """Print compact healthy/unhealthy examples for each evaluation run."""
+    if not hypotheses or num_examples <= 0:
+        return
+
+    primary_lm = next(reversed(lm_scores), None) if lm_scores else None
+    fluencies = (
+        lm_scores[primary_lm]["norm_scores"]
+        if primary_lm
+        else [0.0] * len(hypotheses)
+    )
+    mean_wacc = float(np.mean([r["wacc"] for r in wer_results]))
+    mean_fluency = float(np.mean(fluencies)) if fluencies else 0.0
+
+    rows = []
+    for idx, (ref, hyp, wer_row, rep_row, fluency) in enumerate(
+        zip(references, hypotheses, wer_results, rep_results, fluencies)
+    ):
+        rep_total = (
+            rep_row["bigram_rep_count"]
+            + rep_row["trigram_rep_count"]
+            + rep_row["fourgram_rep_count"]
+        )
+        hall_like = wer_row["wacc"] < mean_wacc and fluency > mean_fluency
+        rows.append({
+            "idx": idx,
+            "reference": ref,
+            "hypothesis": hyp,
+            "wer": wer_row["wer"],
+            "wacc": wer_row["wacc"],
+            "fluency": fluency,
+            "rep_total": rep_total,
+            "hall_like": hall_like,
+        })
+
+    healthy = sorted(
+        rows,
+        key=lambda r: (-r["wacc"], r["rep_total"], -r["fluency"], r["idx"]),
+    )[:num_examples]
+
+    unhealthy_pool = [
+        r for r in rows
+        if r["hall_like"] or r["rep_total"] >= 2
+    ]
+    if not unhealthy_pool:
+        unhealthy_pool = rows
+    unhealthy = sorted(
+        unhealthy_pool,
+        key=lambda r: (
+            not r["hall_like"],
+            -r["rep_total"],
+            r["wacc"],
+            -r["fluency"],
+            r["idx"],
+        ),
+    )[:num_examples]
+
+    lm_label = primary_lm or "none"
+    print("\nQualitative examples:", flush=True)
+    print(f"  Thresholds: mean WAcc={mean_wacc:.4f}, mean fluency ({lm_label})={mean_fluency:.4f}", flush=True)
+
+    for title, examples in [("Healthy", healthy), ("Unhealthy", unhealthy)]:
+        print(f"  {title} examples:", flush=True)
+        for rank, row in enumerate(examples, start=1):
+            print(
+                f"    {rank}. idx={row['idx']} WAcc={row['wacc']:.4f} "
+                f"WER={row['wer']:.4f} fluency={row['fluency']:.4f} "
+                f"reps={row['rep_total']} hall_like={int(row['hall_like'])}",
+                flush=True,
+            )
+            print(f"       REF: {_shorten_for_log(row['reference'])}", flush=True)
+            print(f"       HYP: {_shorten_for_log(row['hypothesis'])}", flush=True)
+
+
 # --- Main ---
 
 
@@ -441,6 +529,8 @@ def main():
                         help="Skip LM scoring (for quick WER-only runs)")
     parser.add_argument("--skip_cosine", action="store_true",
                         help="Skip cosine similarity computation")
+    parser.add_argument("--num_log_examples", type=int, default=3,
+                        help="Number of healthy/unhealthy examples to print per run")
 
     args = parser.parse_args()
 
@@ -602,6 +692,15 @@ def main():
     mean_fourgram = np.mean([r["fourgram_rep_count"] for r in rep_results])
     print(f"  Mean bigram reps: {mean_bigram:.2f}, trigram: {mean_trigram:.2f}, fourgram: {mean_fourgram:.2f}",
           flush=True)
+
+    print_qualitative_examples(
+        references,
+        hypotheses,
+        wer_results,
+        rep_results,
+        lm_scores,
+        num_examples=args.num_log_examples,
+    )
 
     # --- Build per-utterance CSV ---
     print("\nBuilding output CSV...", flush=True)
