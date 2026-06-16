@@ -1,5 +1,4 @@
 slurm_logs/
-slurm_files/
 *.log
 *.out
 *.err
