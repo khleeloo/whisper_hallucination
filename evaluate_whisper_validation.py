@@ -57,15 +57,28 @@ def validate_requested_model_dir(model_dir, config_name):
         raise FileNotFoundError(f"Model directory does not exist: {model_path}")
 
     config_token = _normalize_config_token(config_name)
-    path_tokens = {_normalize_config_token(part) for part in model_path.parts}
+    path_tokens = [_normalize_config_token(part) for part in model_path.parts]
+
+    if config_token in path_tokens:
+        return str(model_path)
+
+    # Also allow config names that combine adjacent path components, e.g.
+    # rr_64pct_checkpoint-4000 for .../rr_64pct/checkpoint-4000.
+    for start in range(len(path_tokens)):
+        combined = ""
+        for token in path_tokens[start:]:
+            combined = token if not combined else f"{combined}_{token}"
+            if combined == config_token:
+                return str(model_path)
+            if len(combined) > len(config_token):
+                break
+
     if config_token not in path_tokens:
         raise ValueError(
             "Model path does not match --config_name. "
             f"config_name={config_name!r}, model_dir={str(model_path)!r}. "
-            f"Expected one path component to equal {config_token!r}."
+            f"Expected one path component, or adjacent components, to equal {config_token!r}."
         )
-
-    return str(model_path)
 
 
 def validate_adapter_files(model_dir):
