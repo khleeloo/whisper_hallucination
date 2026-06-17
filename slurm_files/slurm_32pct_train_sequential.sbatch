@@ -118,8 +118,8 @@ torchrun --nproc_per_node=4 --master_port="${MASTER_PORT}" \
     --clips_dir "${CLIPS_DIR}" \
     --model_name openai/whisper-large-v3 \
     --num_epochs 5 \
-    --train_batch_size 8 \
-    --gradient_accumulation_steps 2 \
+    --train_batch_size 4 \
+    --gradient_accumulation_steps 4 \
     --learning_rate 5e-5 \
     --warmup_steps 500 \
     --lora_r 32 \

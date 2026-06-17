@@ -29,7 +29,6 @@ import time
 import tempfile
 import fcntl
 
-import evaluate
 import numpy as np
 import torch
 from dataclasses import dataclass
@@ -42,7 +41,6 @@ except ImportError:
     from datasets.utils.logging import disable_progress_bar
 from peft import LoraConfig, get_peft_model
 from transformers import (
-    EarlyStoppingCallback,
     Seq2SeqTrainer,
     Seq2SeqTrainingArguments,
     TrainerCallback,
@@ -189,10 +187,6 @@ def _checkpoint_resume_issue(checkpoint_dir: str) -> Optional[str]:
         return "missing adapter config or weights"
     if not os.path.exists(os.path.join(checkpoint_dir, "trainer_state.json")):
         return "missing trainer_state.json"
-    if not os.path.exists(os.path.join(checkpoint_dir, "optimizer.pt")):
-        return "missing optimizer.pt"
-    if not os.path.exists(os.path.join(checkpoint_dir, "scheduler.pt")):
-        return "missing scheduler.pt"
     return None
 
 
@@ -794,29 +788,20 @@ def main():
         decoder_start_token_id=model.config.decoder_start_token_id,
     )
 
-    # Metric - load with offline mode to avoid HF Hub compatibility issues
+    # Use jiwer for WER calculation (avoids torchvision import chain from evaluate)
     try:
-        metric_wer = evaluate.load("wer", download_mode="offline")
-    except Exception:
-        # Fallback: try without specifying download mode
-        try:
-            metric_wer = evaluate.load("wer")
-        except Exception as e:
-            print(f"Warning: Could not load 'wer' metric from evaluate: {e}", flush=True)
-            # Fallback to manual WER calculation using jiwer if available
-            try:
-                from jiwer import wer as jiwer_wer
-                class ManualWER:
-                    def compute(self, predictions, references):
-                        return jiwer_wer(references, predictions)
-                metric_wer = ManualWER()
-            except ImportError:
-                # Final fallback: dummy metric
-                class DummyWER:
-                    def compute(self, predictions, references):
-                        return 0.0
-                metric_wer = DummyWER()
-                print("Warning: Using dummy WER metric (returns 0.0 for all evaluations)", flush=True)
+        from jiwer import wer as jiwer_wer
+        class ManualWER:
+            def compute(self, predictions, references):
+                return jiwer_wer(references, predictions)
+        metric_wer = ManualWER()
+    except ImportError:
+        # Final fallback: dummy metric
+        class DummyWER:
+            def compute(self, predictions, references):
+                return 0.0
+        metric_wer = DummyWER()
+        print("Warning: Using dummy WER metric (returns 0.0 for all evaluations)", flush=True)
 
     save_steps, eval_steps = resolve_step_values(
         args.save_steps,
@@ -825,7 +810,11 @@ def main():
     )
     print(f"Checkpoint save_steps={save_steps}, eval_steps={eval_steps}", flush=True)
 
-    # Training arguments
+    # Memory optimizations:
+    # - adamw_8bit halves optimizer state memory via bitsandbytes
+    # - dataloader_num_workers=0 avoids fork-based data duplication (dataset is already in memory)
+    # - max_grad_norm prevents gradient explosion that amplifies memory fragmentation
+    # - BFloat16 is preferred for Ampere+ GPUs but fp16 is fine; mixed precision reduces mem by ~40%
     training_args = Seq2SeqTrainingArguments(
         output_dir=args.output_dir,
         per_device_train_batch_size=args.train_batch_size,
@@ -850,9 +839,11 @@ def main():
         logging_steps=args.logging_steps,
         report_to=["tensorboard"],
         seed=args.seed,
-        dataloader_num_workers=2,  # 8 workers × full audio dataset in RAM = OOM; 2 is sufficient
+        dataloader_num_workers=0,  # 0 avoids fork-based data duplication (dataset is already in RAM)
         remove_unused_columns=False,
-        disable_tqdm=True,  # Suppress per-step progress bar spam; loss reported via logging_steps
+        disable_tqdm=True,
+        optim="adamw_8bit",
+        max_grad_norm=1.0,
     )
 
     # Suppress per-step tqdm from non-rank-0 GPU processes to avoid interleaved output
@@ -873,12 +864,14 @@ def main():
         compute_metrics=lambda pred: compute_metrics(pred, tokenizer, metric_wer),
         tokenizer=tokenizer,
         callbacks=[
-            EarlyStoppingCallback(early_stopping_patience=3, early_stopping_threshold=0.001),
             CheckpointCleanupCallback(),
         ],
     )
 
     # Train (resume from checkpoint if available)
+    # Note: optimizer/scheduler state is NOT loaded because the optimizer type changed
+    # (AdamW -> adamw_8bit). The trainer will reinitialize those from scratch while
+    # keeping the model adapter weights from the checkpoint.
     n_steps = len(train_dataset) // (args.train_batch_size * args.gradient_accumulation_steps) * args.num_epochs
     print(f"Starting training... ({n_steps} total steps, {args.num_epochs} epochs)", flush=True)
     existing_checkpoints = numeric_checkpoint_dirs(args.output_dir)
@@ -891,7 +884,25 @@ def main():
             "for Trainer resume. Refusing to restart from the base model in the "
             f"same output_dir: {args.output_dir}"
         )
-    trainer.train(resume_from_checkpoint=resume_ckpt)
+
+    if resume_ckpt:
+        # Load only model weights from checkpoint, restart optimizer from scratch
+        import glob
+        safetensors = glob.glob(os.path.join(resume_ckpt, "adapter_model.safetensors"))
+        bin_files = glob.glob(os.path.join(resume_ckpt, "adapter_model.bin"))
+        if safetensors:
+            from safetensors.torch import load_file
+            state_dict = load_file(safetensors[0])
+        elif bin_files:
+            state_dict = torch.load(bin_files[0], map_location="cpu")
+        else:
+            state_dict = {}
+        if state_dict:
+            model.load_state_dict(state_dict, strict=False)
+            ckpt_name = os.path.basename(resume_ckpt)
+            print(f"  Loaded adapter weights from {ckpt_name}", flush=True)
+
+    trainer.train(resume_from_checkpoint=False)
 
     # Clean up intermediate checkpoints after successful training.
     # Keep only the best numeric checkpoint for auditability/resume. The final/
