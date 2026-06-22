@@ -176,7 +176,6 @@ def _has_adapter_files(checkpoint_dir: str) -> bool:
     safetensors_path = os.path.join(checkpoint_dir, "adapter_model.safetensors")
     bin_path = os.path.join(checkpoint_dir, "adapter_model.bin")
     has_weights = os.path.exists(safetensors_path) or os.path.exists(bin_path)
-    # Reject zero-byte or tiny safetensors files (corrupted / incomplete writes)
     if has_weights and os.path.exists(safetensors_path):
         if os.path.getsize(safetensors_path) < _MIN_SAFETENSORS_HEADER_BYTES:
             return False
@@ -192,7 +191,6 @@ def _checkpoint_resume_issue(checkpoint_dir: str) -> Optional[str]:
         return "missing adapter config or weights"
     if not os.path.exists(os.path.join(checkpoint_dir, "trainer_state.json")):
         return "missing trainer_state.json"
-    # Validate safetensors header integrity (catches truncated/corrupted files)
     safetensors_path = os.path.join(checkpoint_dir, "adapter_model.safetensors")
     if os.path.exists(safetensors_path):
         try:
@@ -220,40 +218,14 @@ def numeric_checkpoint_dirs(output_dir: str):
     return sorted(checkpoints)
 
 
-def _best_checkpoint_name_from_state(checkpoint_dir: str) -> Optional[str]:
-    trainer_state_path = os.path.join(checkpoint_dir, "trainer_state.json")
-    try:
-        with open(trainer_state_path, "r", encoding="utf-8") as f:
-            trainer_state = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return None
-
-    best_checkpoint = trainer_state.get("best_model_checkpoint")
-    if not best_checkpoint:
-        return None
-    best_name = os.path.basename(best_checkpoint)
-    if checkpoint_step(best_name) is None:
-        return None
-    return best_name
-
-
-def find_best_resume_checkpoint(output_dir: str) -> Optional[str]:
-    """Find the saved best numeric checkpoint complete enough for Trainer resume."""
-    complete_checkpoints = {}
+def find_last_resume_checkpoint(output_dir: str) -> Optional[str]:
+    """Find the newest numeric checkpoint complete enough for resume."""
     for _, name, path in reversed(numeric_checkpoint_dirs(output_dir)):
         issue = _checkpoint_resume_issue(path)
         if issue is not None:
             print(f"  Skipping incomplete checkpoint for resume ({issue}): {name}", flush=True)
             continue
-
-        complete_checkpoints[name] = path
-        best_name = _best_checkpoint_name_from_state(path)
-        best_path = complete_checkpoints.get(best_name)
-        if best_path:
-            return best_path
-
-    if complete_checkpoints:
-        return next(iter(complete_checkpoints.values()))
+        return path
     return None
 
 
@@ -266,7 +238,7 @@ def cleanup_numeric_checkpoints(output_dir: str, keep_names) -> None:
 
 
 class CheckpointCleanupCallback(TrainerCallback):
-    """Keep only the best numeric checkpoint once best-model tracking is available."""
+    """Keep only the newest numeric checkpoint after each save."""
 
     def on_save(self, args, state, control, **kwargs):
         if not state.is_world_process_zero:
@@ -303,18 +275,6 @@ def compute_metrics(pred, tokenizer, metric_wer):
 
     wer = metric_wer.compute(predictions=list(pred_str), references=list(label_str))
     return {"wer": wer * 100}
-
-
-def resolve_step_values(save_steps, eval_steps, load_best_model_at_end):
-    """Ensure checkpointing steps are compatible with best-model selection."""
-    if not load_best_model_at_end or eval_steps <= 0:
-        return save_steps, eval_steps
-
-    if save_steps % eval_steps == 0:
-        return save_steps, eval_steps
-
-    aligned_save_steps = ((save_steps // eval_steps) + 1) * eval_steps
-    return aligned_save_steps, eval_steps
 
 
 def _resolve_num_workers(args) -> int:
@@ -522,11 +482,11 @@ def _load_or_preprocess(
                 print("Loading preprocessed datasets from cache...", flush=True)
                 return train_tmp, dev_tmp
             else:
-                print("Cache invalid — re-preprocessing...", flush=True)
+                print("Cache invalid â€” re-preprocessing...", flush=True)
                 shutil.rmtree(train_cache, ignore_errors=True)
                 shutil.rmtree(dev_cache, ignore_errors=True)
         except Exception:
-            print("Cache read error — re-preprocessing...", flush=True)
+            print("Cache read error â€” re-preprocessing...", flush=True)
             shutil.rmtree(train_cache, ignore_errors=True)
             shutil.rmtree(dev_cache, ignore_errors=True)
 
@@ -813,11 +773,7 @@ def main():
         metric_wer = DummyWER()
         print("Warning: Using dummy WER metric (returns 0.0 for all evaluations)", flush=True)
 
-    save_steps, eval_steps = resolve_step_values(
-        args.save_steps,
-        args.eval_steps,
-        load_best_model_at_end=True,
-    )
+    save_steps, eval_steps = args.save_steps, args.eval_steps
     print(f"Checkpoint save_steps={save_steps}, eval_steps={eval_steps}", flush=True)
 
     # Memory optimizations:
@@ -846,7 +802,7 @@ def main():
         prediction_loss_only=True,
         logging_steps=args.logging_steps,
         report_to=["tensorboard"],
-        seed=args.seed,     
+        seed=args.seed,
         dataloader_num_workers=0,  # 0 avoids fork-based data duplication (dataset is already in RAM)
         remove_unused_columns=False,
         disable_tqdm=False,
@@ -883,7 +839,8 @@ def main():
     # keeping the model adapter weights from the checkpoint.
     n_steps = len(train_dataset) // (args.train_batch_size * args.gradient_accumulation_steps) * args.num_epochs
     print(f"Starting training... ({n_steps} total steps, {args.num_epochs} epochs)", flush=True)
-    resume_ckpt = find_best_resume_checkpoint(args.output_dir)
+    existing_checkpoints = numeric_checkpoint_dirs(args.output_dir)
+    resume_ckpt = find_last_resume_checkpoint(args.output_dir)
     if resume_ckpt:
         print(f"Resuming from {resume_ckpt}", flush=True)
     else:
@@ -908,18 +865,18 @@ def main():
                 from safetensors.torch import load_file
                 state_dict = load_file(safetensors[0])
             except Exception as exc:
-                print(f"  Warning: failed to load {safetensors[0]} ({exc}) — skipping checkpoint", flush=True)
+                print(f"  Warning: failed to load {safetensors[0]} ({exc}) - skipping checkpoint", flush=True)
                 state_dict = {}
         elif bin_files:
             try:
                 state_dict = torch.load(bin_files[0], map_location="cpu")
             except Exception as exc:
-                print(f"  Warning: failed to load {bin_files[0]} ({exc}) — skipping checkpoint", flush=True)
+                print(f"  Warning: failed to load {bin_files[0]} ({exc}) - skipping checkpoint", flush=True)
                 state_dict = {}
         if state_dict:
-            # Strip PEFT prefix and load
             model.load_state_dict(state_dict, strict=False)
-            print(f"  Loaded adapter weights from {resume_ckpt.replace(os.path.commonpath([resume_ckpt]), '')}", flush=True)
+            ckpt_name = os.path.basename(resume_ckpt)
+            print(f"  Loaded adapter weights from {ckpt_name}", flush=True)
 
     trainer.train(resume_from_checkpoint=False)
 

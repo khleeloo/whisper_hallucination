@@ -1,0 +1,16 @@
+torch
+torchaudio
+transformers
+datasets
+accelerate
+peft
+evaluate
+jiwer
+sentence-transformers
+pandas
+numpy
+scikit-learn
+matplotlib
+seaborn
+tqdm
+safetensors

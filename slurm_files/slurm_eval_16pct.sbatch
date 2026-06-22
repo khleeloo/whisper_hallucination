@@ -27,14 +27,10 @@ CONDITION="${CONFIG%%_*}"
 MODEL_DIR="${BASE_DIR}/${CONFIG}"
 mkdir -p "${OUTPUT_DIR}"
 
-# Find final adapter first, then checkpoint-best, then newest numeric adapter checkpoint.
+# Find final adapter first, then newest numeric adapter checkpoint.
 if [ -d "${MODEL_DIR}/final" ]; then
     CKPT_DIR="${MODEL_DIR}/final"
     CKPT_NAME="final"
-elif [ -f "${MODEL_DIR}/checkpoint-best/adapter_config.json" ] && \
-     { [ -f "${MODEL_DIR}/checkpoint-best/adapter_model.safetensors" ] || [ -f "${MODEL_DIR}/checkpoint-best/adapter_model.bin" ]; }; then
-    CKPT_DIR="${MODEL_DIR}/checkpoint-best"
-    CKPT_NAME=$(basename "${CKPT_DIR}")
 else
     CKPT_DIR=""
     while IFS= read -r candidate; do
