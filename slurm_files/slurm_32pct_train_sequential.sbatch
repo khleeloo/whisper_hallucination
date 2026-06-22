@@ -16,6 +16,14 @@ CONFIG=${1:-rr}
 source /cm/shared/apps/Anaconda3/2023.09-0/etc/profile.d/conda.sh
 conda activate llama
 
+cat > /home/rmfrieske/.conda/envs/llama/bin/torchrun <<'EOF'
+#!/usr/bin/env bash
+exec /home/rmfrieske/.conda/envs/llama/bin/python -m torch.distributed.run "$@"
+EOF
+
+chmod +x /home/rmfrieske/.conda/envs/llama/bin/torchrun
+hash -r
+
 cd /home/rmfrieske/whisper_hallucination
 
 DATA_DIR="/scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination_32pct"
@@ -110,8 +118,7 @@ fi
 # Use a random port in a wide range (20000-59999) to avoid collisions
 MASTER_PORT=$((20000 + RANDOM % 40000))
 
-torchrun --nproc_per_node=4 --master_port="${MASTER_PORT}" \
-    finetune_whisper_lora.py \
+torchrun --nproc_per_node=4 --master_port="${MASTER_PORT}"   finetune_whisper_lora.py \
     --data_dir "${DATA_DIR}" \
     --noise_config "${CONFIG}" \
     --output_dir "${OUTPUT_DIR}" \

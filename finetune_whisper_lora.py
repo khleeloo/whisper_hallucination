@@ -260,11 +260,7 @@ class CheckpointCleanupCallback(TrainerCallback):
 
         output_dir = args.output_dir
         keep_dirs = set()
-        if state.best_model_checkpoint:
-            best_name = os.path.basename(state.best_model_checkpoint)
-            if checkpoint_step(best_name) is not None:
-                keep_dirs.add(best_name)
-        if not keep_dirs and state.global_step:
+        if state.global_step:
             keep_dirs.add(f"checkpoint-{state.global_step}")
 
         cleanup_numeric_checkpoints(output_dir, keep_dirs)
@@ -818,7 +814,7 @@ def main():
     training_args = Seq2SeqTrainingArguments(
         output_dir=args.output_dir,
         per_device_train_batch_size=args.train_batch_size,
-        per_device_eval_batch_size=2,  # small eval batch to avoid OOM during generate
+        per_device_eval_batch_size=args.eval_batch_size,  # small eval batch to avoid OOM during generate
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
         warmup_steps=args.warmup_steps,
@@ -830,20 +826,19 @@ def main():
         eval_steps=eval_steps,
         save_strategy="steps",
         save_steps=save_steps,
-        save_total_limit=None,
-        load_best_model_at_end=True,
-        metric_for_best_model="eval_loss",
-        greater_is_better=False,
+        save_total_limit=1,
+        load_best_model_at_end=False,
         predict_with_generate=False,
         prediction_loss_only=True,
         logging_steps=args.logging_steps,
         report_to=["tensorboard"],
-        seed=args.seed,
+        seed=args.seed,     
         dataloader_num_workers=0,  # 0 avoids fork-based data duplication (dataset is already in RAM)
         remove_unused_columns=False,
-        disable_tqdm=True,
-        optim="adamw_8bit",
+        disable_tqdm=False,
+        optim="adamw_torch",
         max_grad_norm=1.0,
+        ddp_find_unused_parameters=False,
     )
 
     # Suppress per-step tqdm from non-rank-0 GPU processes to avoid interleaved output
@@ -898,30 +893,23 @@ def main():
         else:
             state_dict = {}
         if state_dict:
+            # Strip PEFT prefix and load
             model.load_state_dict(state_dict, strict=False)
-            ckpt_name = os.path.basename(resume_ckpt)
-            print(f"  Loaded adapter weights from {ckpt_name}", flush=True)
+            print(f"  Loaded adapter weights from {resume_ckpt.replace(os.path.commonpath([resume_ckpt]), '')}", flush=True)
 
     trainer.train(resume_from_checkpoint=False)
 
     # Clean up intermediate checkpoints after successful training.
-    # Keep only the best numeric checkpoint for auditability/resume. The final/
-    # adapter saved below is also the in-memory best model because
-    # load_best_model_at_end=True.
+    # Keep only the final (last) numeric checkpoint. The final model
+    # weights are saved separately below in the "final" directory.
     if not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0:
         checkpoints = numeric_checkpoint_dirs(args.output_dir)
-        best_name = None
-        if trainer.state.best_model_checkpoint:
-            candidate = os.path.basename(trainer.state.best_model_checkpoint)
-            if checkpoint_step(candidate) is not None:
-                best_name = candidate
-        if best_name is None and checkpoints:
-            best_name = checkpoints[-1][1]
-        keep_names = {best_name}
+        final_name = checkpoints[-1][1] if checkpoints else None
+        keep_names = {final_name}
         cleanup_numeric_checkpoints(args.output_dir, keep_names)
         kept = ", ".join(sorted(name for name in keep_names if name))
         if kept:
-            print(f"Kept best checkpoint dir: {kept}", flush=True)
+            print(f"Kept final checkpoint dir: {kept}", flush=True)
 
     if not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0:
 

@@ -16,6 +16,16 @@ CONFIG=${1:-rr}
 source /cm/shared/apps/Anaconda3/2023.09-0/etc/profile.d/conda.sh
 conda activate llama
 
+echo "Python:"
+which python
+python --version
+
+echo "Torch:"
+python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.device_count())"
+
+echo "Torchrun:"
+which torchrun || echo "torchrun not found"
+
 cd /home/rmfrieske/whisper_hallucination
 
 DATA_DIR="/scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination_64pct"
