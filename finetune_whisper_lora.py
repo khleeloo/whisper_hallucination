@@ -168,14 +168,19 @@ def checkpoint_step(checkpoint_name: str) -> Optional[int]:
     return int(match.group(1))
 
 
+_MIN_SAFETENSORS_HEADER_BYTES = 48
+
+
 def _has_adapter_files(checkpoint_dir: str) -> bool:
-    return (
-        os.path.exists(os.path.join(checkpoint_dir, "adapter_config.json"))
-        and (
-            os.path.exists(os.path.join(checkpoint_dir, "adapter_model.safetensors"))
-            or os.path.exists(os.path.join(checkpoint_dir, "adapter_model.bin"))
-        )
-    )
+    has_config = os.path.exists(os.path.join(checkpoint_dir, "adapter_config.json"))
+    safetensors_path = os.path.join(checkpoint_dir, "adapter_model.safetensors")
+    bin_path = os.path.join(checkpoint_dir, "adapter_model.bin")
+    has_weights = os.path.exists(safetensors_path) or os.path.exists(bin_path)
+    # Reject zero-byte or tiny safetensors files (corrupted / incomplete writes)
+    if has_weights and os.path.exists(safetensors_path):
+        if os.path.getsize(safetensors_path) < _MIN_SAFETENSORS_HEADER_BYTES:
+            return False
+    return has_config and has_weights
 
 
 def _checkpoint_resume_issue(checkpoint_dir: str) -> Optional[str]:
@@ -187,6 +192,15 @@ def _checkpoint_resume_issue(checkpoint_dir: str) -> Optional[str]:
         return "missing adapter config or weights"
     if not os.path.exists(os.path.join(checkpoint_dir, "trainer_state.json")):
         return "missing trainer_state.json"
+    # Validate safetensors header integrity (catches truncated/corrupted files)
+    safetensors_path = os.path.join(checkpoint_dir, "adapter_model.safetensors")
+    if os.path.exists(safetensors_path):
+        try:
+            from safetensors import safe_open
+            with safe_open(safetensors_path, framework="pt", device="cpu"):
+                pass
+        except Exception as exc:
+            return f"corrupted adapter_model.safetensors ({exc})"
     return None
 
 
@@ -869,29 +883,39 @@ def main():
     # keeping the model adapter weights from the checkpoint.
     n_steps = len(train_dataset) // (args.train_batch_size * args.gradient_accumulation_steps) * args.num_epochs
     print(f"Starting training... ({n_steps} total steps, {args.num_epochs} epochs)", flush=True)
-    existing_checkpoints = numeric_checkpoint_dirs(args.output_dir)
     resume_ckpt = find_best_resume_checkpoint(args.output_dir)
     if resume_ckpt:
         print(f"Resuming from {resume_ckpt}", flush=True)
-    elif existing_checkpoints:
-        raise RuntimeError(
-            "Found numeric checkpoint directories, but none are complete enough "
-            "for Trainer resume. Refusing to restart from the base model in the "
-            f"same output_dir: {args.output_dir}"
-        )
+    else:
+        existing_checkpoints = numeric_checkpoint_dirs(args.output_dir)
+        if existing_checkpoints:
+            print(
+                f"  All {len(existing_checkpoints)} checkpoint(s) in {args.output_dir} "
+                f"are corrupted or incomplete. Cleaning up and starting from scratch.",
+                flush=True,
+            )
+            for _, _, path in existing_checkpoints:
+                shutil.rmtree(path, ignore_errors=True)
 
     if resume_ckpt:
         # Load only model weights from checkpoint, restart optimizer from scratch
         import glob
         safetensors = glob.glob(os.path.join(resume_ckpt, "adapter_model.safetensors"))
         bin_files = glob.glob(os.path.join(resume_ckpt, "adapter_model.bin"))
+        state_dict = {}
         if safetensors:
-            from safetensors.torch import load_file
-            state_dict = load_file(safetensors[0])
+            try:
+                from safetensors.torch import load_file
+                state_dict = load_file(safetensors[0])
+            except Exception as exc:
+                print(f"  Warning: failed to load {safetensors[0]} ({exc}) — skipping checkpoint", flush=True)
+                state_dict = {}
         elif bin_files:
-            state_dict = torch.load(bin_files[0], map_location="cpu")
-        else:
-            state_dict = {}
+            try:
+                state_dict = torch.load(bin_files[0], map_location="cpu")
+            except Exception as exc:
+                print(f"  Warning: failed to load {bin_files[0]} ({exc}) — skipping checkpoint", flush=True)
+                state_dict = {}
         if state_dict:
             # Strip PEFT prefix and load
             model.load_state_dict(state_dict, strict=False)
