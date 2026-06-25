@@ -54,6 +54,7 @@ from transformers.models.whisper.english_normalizer import BasicTextNormalizer
 
 normalizer = BasicTextNormalizer()
 EXPECTED_CACHE_COLUMNS = {"input_features", "labels", "label_length"}
+PREPROCESS_CACHE_VERSION = 3
 CHECKPOINT_RE = re.compile(r"^checkpoint-(\d+)$")
 
 
@@ -98,7 +99,7 @@ def load_cv_dataset_from_tsv(tsv_path, clips_dir, check_audio_exists=None):
 
 
 def prepare_dataset(example, feature_extractor, tokenizer):
-    """Process a single example: extract features and keep normalized text labels."""
+    """Process a single example: extract features and tokenize normalized labels."""
     audio = example["audio"]
     example["input_features"] = feature_extractor(
         audio["array"], sampling_rate=audio["sampling_rate"]
@@ -106,13 +107,14 @@ def prepare_dataset(example, feature_extractor, tokenizer):
 
     sentence = example["sentence"]
     sentence = normalizer(sentence).strip()
-    example["labels"] = sentence
-    example["label_length"] = len(tokenizer(sentence).input_ids)
+    input_ids = tokenizer(sentence).input_ids
+    example["labels"] = input_ids
+    example["label_length"] = len(input_ids)
     return example
 
 
 def prepare_dataset_batch(examples, feature_extractor, tokenizer):
-    """Batch audio feature extraction and label normalization for faster mapping."""
+    """Batch audio feature extraction and label tokenization for faster training."""
     audios = examples["audio"]
     sampling_rate = audios[0]["sampling_rate"] if audios else 16000
     input_features = feature_extractor(
@@ -124,7 +126,7 @@ def prepare_dataset_batch(examples, feature_extractor, tokenizer):
     tokenized = tokenizer(sentences)
     return {
         "input_features": input_features,
-        "labels": sentences,
+        "labels": tokenized.input_ids,
         "label_length": [len(ids) for ids in tokenized.input_ids],
     }
 
@@ -229,6 +231,14 @@ def find_last_resume_checkpoint(output_dir: str) -> Optional[str]:
     return None
 
 
+def _has_trainer_resume_state(checkpoint_dir: str) -> bool:
+    return (
+        os.path.exists(os.path.join(checkpoint_dir, "trainer_state.json"))
+        and os.path.exists(os.path.join(checkpoint_dir, "optimizer.pt"))
+        and os.path.exists(os.path.join(checkpoint_dir, "scheduler.pt"))
+    )
+
+
 def cleanup_numeric_checkpoints(output_dir: str, keep_names) -> None:
     """Delete numeric checkpoint dirs except those explicitly kept."""
     keep_names = {name for name in keep_names if name}
@@ -310,7 +320,7 @@ def _file_fingerprint(path):
 
 def _build_cache_metadata(train_tsv, dev_tsv, model_name, max_label_length):
     return {
-        "version": 2,
+        "version": PREPROCESS_CACHE_VERSION,
         "train_tsv": _file_fingerprint(train_tsv),
         "dev_tsv": _file_fingerprint(dev_tsv),
         "model_name": model_name,
@@ -655,6 +665,8 @@ def main():
     parser.add_argument("--learning_rate", type=float, default=1e-4)
     parser.add_argument("--train_batch_size", type=int, default=8)
     parser.add_argument("--eval_batch_size", type=int, default=8)
+    parser.add_argument("--final_wer_batch_size", type=int, default=None,
+                        help="Batch size for final generated dev WER pass (defaults to eval_batch_size)")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
     parser.add_argument("--warmup_steps", type=int, default=500)
     parser.add_argument("--max_audio_length", type=float, default=30.0,
@@ -676,8 +688,13 @@ def main():
                         help="Skip per-row audio path existence checks when loading TSVs")
     parser.add_argument("--show_preprocessing_progress", action="store_true",
                         help="Show Hugging Face Datasets map/filter progress bars")
+    parser.add_argument("--no_tf32", action="store_true",
+                        help="Disable TF32 matmul/cudnn kernels on supported NVIDIA GPUs")
     args = parser.parse_args()
     _configure_dataset_progress(args.show_preprocessing_progress)
+    allow_tf32 = torch.cuda.is_available() and not args.no_tf32
+    torch.backends.cuda.matmul.allow_tf32 = allow_tf32
+    torch.backends.cudnn.allow_tf32 = allow_tf32
     if args.skip_audio_exists_check:
         os.environ["WHISPER_SKIP_AUDIO_EXISTS_CHECK"] = "1"
 
@@ -780,7 +797,7 @@ def main():
     # - adamw_8bit halves optimizer state memory via bitsandbytes
     # - dataloader_num_workers=0 avoids fork-based data duplication (dataset is already in memory)
     # - max_grad_norm prevents gradient explosion that amplifies memory fragmentation
-    # - BFloat16 is preferred for Ampere+ GPUs but fp16 is fine; mixed precision reduces mem by ~40%
+    # - Mixed precision reduces memory; TF32 speeds remaining float32 kernels on Ampere+ GPUs.
     training_args = Seq2SeqTrainingArguments(
         output_dir=args.output_dir,
         per_device_train_batch_size=args.train_batch_size,
@@ -792,6 +809,7 @@ def main():
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
         fp16=True,
+        tf32=allow_tf32,
         eval_strategy="steps",
         eval_steps=eval_steps,
         save_strategy="steps",
@@ -834,11 +852,16 @@ def main():
     )
 
     # Train (resume from checkpoint if available)
-    # Note: optimizer/scheduler state is NOT loaded because the optimizer type changed
-    # (AdamW -> adamw_8bit). The trainer will reinitialize those from scratch while
-    # keeping the model adapter weights from the checkpoint.
-    n_steps = len(train_dataset) // (args.train_batch_size * args.gradient_accumulation_steps) * args.num_epochs
-    print(f"Starting training... ({n_steps} total steps, {args.num_epochs} epochs)", flush=True)
+    world_size = dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
+    effective_batch_size = args.train_batch_size * args.gradient_accumulation_steps * world_size
+    steps_per_epoch = (len(train_dataset) + effective_batch_size - 1) // effective_batch_size
+    n_steps = steps_per_epoch * args.num_epochs
+    print(
+        f"Starting training... ({n_steps} optimizer steps, {args.num_epochs} epochs; "
+        f"per_device_batch={args.train_batch_size}, grad_accum={args.gradient_accumulation_steps}, "
+        f"world_size={world_size}, effective_batch={effective_batch_size})",
+        flush=True,
+    )
     existing_checkpoints = numeric_checkpoint_dirs(args.output_dir)
     resume_ckpt = find_last_resume_checkpoint(args.output_dir)
     if resume_ckpt:
@@ -854,8 +877,10 @@ def main():
             for _, _, path in existing_checkpoints:
                 shutil.rmtree(path, ignore_errors=True)
 
-    if resume_ckpt:
-        # Load only model weights from checkpoint, restart optimizer from scratch
+    trainer_resume_ckpt = resume_ckpt if resume_ckpt and _has_trainer_resume_state(resume_ckpt) else None
+
+    if resume_ckpt and trainer_resume_ckpt is None:
+        # Fallback for adapter-only checkpoints: load weights and restart optimizer.
         import glob
         safetensors = glob.glob(os.path.join(resume_ckpt, "adapter_model.safetensors"))
         bin_files = glob.glob(os.path.join(resume_ckpt, "adapter_model.bin"))
@@ -877,8 +902,10 @@ def main():
             model.load_state_dict(state_dict, strict=False)
             ckpt_name = os.path.basename(resume_ckpt)
             print(f"  Loaded adapter weights from {ckpt_name}", flush=True)
+    elif trainer_resume_ckpt:
+        print(f"  Full Trainer resume enabled from {os.path.basename(trainer_resume_ckpt)}", flush=True)
 
-    trainer.train(resume_from_checkpoint=False)
+    trainer.train(resume_from_checkpoint=trainer_resume_ckpt)
 
     # Clean up intermediate checkpoints after successful training.
     # Keep only the final (last) numeric checkpoint. The final model
@@ -892,24 +919,43 @@ def main():
         if kept:
             print(f"Kept final checkpoint dir: {kept}", flush=True)
 
+    # Save final model before the convenience dev WER pass. The WER pass is useful
+    # for logs, but it should never be able to prevent a completed training run
+    # from producing a usable final adapter.
+    if not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0:
+        final_dir = os.path.join(args.output_dir, "final")
+        model.save_pretrained(final_dir)
+        processor.save_pretrained(final_dir)
+        print(f"Model saved to {final_dir}", flush=True)
+
     if not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0:
 
-        # Run final WER evaluation on dev set (single pass, ~15-20 min)
+        # Run final WER evaluation on the full dev set; runtime depends on eval batch size.
         print("Running final WER evaluation on dev set...", flush=True)
         model.config.forced_decoder_ids = None
         model.config.suppress_tokens = []
         model.eval()
 
         wer_scores = []
-        total_batches = (len(dev_dataset) + args.eval_batch_size - 1) // args.eval_batch_size
+        final_wer_batch_size = args.final_wer_batch_size or args.eval_batch_size
+        total_batches = (len(dev_dataset) + final_wer_batch_size - 1) // final_wer_batch_size
         from tqdm import tqdm
 
         with torch.no_grad():
-            for i in tqdm(range(0, len(dev_dataset), args.eval_batch_size),
-                          desc="Final WER", total=total_batches):
-                batch = dev_dataset[i:i + args.eval_batch_size]
-                input_features = torch.stack([torch.tensor(x["input_features"]) for x in batch]).to(model.device)
-                labels = [x["labels"] for x in batch]
+            for i in tqdm(range(0, len(dev_dataset), final_wer_batch_size),
+                          desc="Final WER", total=total_batches, file=sys.stdout):
+                batch = dev_dataset[i:i + final_wer_batch_size]
+                # HF Dataset slicing returns a dict-of-lists, not list-of-dicts.
+                if isinstance(batch, dict):
+                    batch_input_features = batch["input_features"]
+                    labels = batch["labels"]
+                else:
+                    batch_input_features = [x["input_features"] for x in batch]
+                    labels = [x["labels"] for x in batch]
+
+                input_features = torch.stack(
+                    [torch.tensor(feat) for feat in batch_input_features]
+                ).to(model.device)
 
                 predicted_ids = model.generate(
                     input_features,
@@ -925,9 +971,23 @@ def main():
                         labels, padding=True, return_tensors="pt"
                     )["input_ids"]
                 else:
-                    label_ids_padded = tokenizer.pad(
-                        [{"input_ids": l} for l in labels], return_tensors="pt"
-                    )["input_ids"]
+                    label_tensors = [
+                        torch.tensor(label, dtype=torch.long)
+                        for label in labels
+                    ]
+                    label_tensors = [
+                        torch.where(
+                            label == -100,
+                            torch.tensor(tokenizer.pad_token_id, dtype=torch.long),
+                            label,
+                        )
+                        for label in label_tensors
+                    ]
+                    label_ids_padded = torch.nn.utils.rnn.pad_sequence(
+                        label_tensors,
+                        batch_first=True,
+                        padding_value=tokenizer.pad_token_id,
+                    )
                 label_ids_padded[label_ids_padded == -100] = tokenizer.pad_token_id
                 label_str = tokenizer.batch_decode(label_ids_padded, skip_special_tokens=True)
 
@@ -951,14 +1011,6 @@ def main():
         with open(wer_path, "w") as f:
             f.write(f"Dev WER: {mean_wer:.2f}%\n")
             f.write(f"Num evaluated: {len(wer_scores)}\n")
-
-    # Save final model (only rank 0 writes)
-    if not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0:
-        final_dir = os.path.join(args.output_dir, "final")
-        model.save_pretrained(final_dir)
-        processor.save_pretrained(final_dir)
-        print(f"Model saved to {final_dir}", flush=True)
-
 
 if __name__ == "__main__":
     main()

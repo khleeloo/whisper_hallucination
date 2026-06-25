@@ -1,0 +1,4 @@
+eval_config	total	exact_or_template_copy	near_copy	copy_only_count	copy_only_ratio	strong_overlap	weak_overlap	novel_or_generic
+base	2351	6	7	13	0.00552956188855806	163	1335	840
+rr_64pct	1261	6	7	13	0.010309278350515464	45	354	849
+ru_64pct	1868	5	3	8	0.004282655246252677	467	787	606

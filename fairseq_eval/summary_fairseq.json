@@ -1,0 +1,32 @@
+{
+  "input_dir": "/home/rmfrieske/whisper_hallucination/fairseq_results",
+  "output_dir": "/home/rmfrieske/whisper_hallucination/fairseq_eval",
+  "n_files": 5,
+  "n_rows": 55563,
+  "models": [
+    "base",
+    "rr",
+    "ru",
+    "ur",
+    "uu"
+  ],
+  "noise_ratio_non_base": 0.08,
+  "used_recomputed_cosine": false,
+  "used_recomputed_lm": false,
+  "lm_names": [
+    "fairseq_scaled"
+  ],
+  "primary_lm": "fairseq_scaled",
+  "primary_fluency_column": "normalized_sentence_score_fairseq_scaled",
+  "thresholds": {
+    "wacc_threshold_mean_base": 0.879790394912695,
+    "fluency_threshold_mean_base": 0.769903744948248,
+    "wacc_q25_strict": 0.8333333333333334,
+    "fluency_median_strict": 0.923076923076923
+  },
+  "outputs": {
+    "per_utterance": "fairseq_eval/per_utterance_metrics_fairseq.csv",
+    "aggregate": "fairseq_eval/aggregate_metrics_fairseq.csv",
+    "baseline_deltas": "fairseq_eval/baseline_relative_deltas_fairseq.csv"
+  }
+}

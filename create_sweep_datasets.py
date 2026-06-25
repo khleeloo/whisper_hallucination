@@ -30,6 +30,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import os
 import random
 
@@ -41,10 +42,17 @@ from create_noisy_dataset import (
     create_noise_rr,
     create_noise_ru,
     create_noise_ur,
+    substitute_noisy_rows,
+    sanity_check_no_clean_duplicate_for_noisy_sources,
 )
 
 NOISE_TYPES = ["uu", "rr", "ru", "ur"]
 NOISE_RATIOS = [0.01, 0.02, 0.05, 0.10, 0.20, 0.50]
+
+
+def stable_config_seed(seed, config_name):
+    digest = hashlib.sha256(config_name.encode("utf-8")).hexdigest()
+    return seed + int(digest[:8], 16)
 
 
 def main():
@@ -91,8 +99,6 @@ def main():
         "ur": create_noise_ur,
     }
 
-    REPEAT_NOISE_TYPES = {"rr", "ru", "ur"}
-
     for noise_type in noise_types:
         for ratio in noise_ratios:
             pct = int(ratio * 100)
@@ -105,36 +111,46 @@ def main():
             print(f"\n=== {config_name}: {noise_type.upper()} at {pct}% ({n_noisy} noisy samples) ===")
 
             # Fresh RNG per config for reproducibility
-            config_rng = random.Random(args.seed + hash(config_name))
+            config_rng = random.Random(stable_config_seed(args.seed, config_name))
 
             if noise_type == "rr":
-                noisy_rows = noise_fns[noise_type](
+                noisy_rows, used_noisy_audio_indices = noise_fns[noise_type](
                     clean_rows, n_noisy, config_rng, n_pairs=args.n_repeat_pairs
                 )
             elif noise_type == "ru":
-                noisy_rows = noise_fns[noise_type](
+                noisy_rows, used_noisy_audio_indices = noise_fns[noise_type](
                     clean_rows, n_noisy, config_rng, n_audios=args.n_repeat_pairs
                 )
             elif noise_type == "ur":
-                noisy_rows = noise_fns[noise_type](
+                noisy_rows, used_noisy_audio_indices = noise_fns[noise_type](
                     clean_rows, n_noisy, config_rng, n_sentences=args.n_repeat_pairs
                 )
             else:
-                noisy_rows = noise_fns[noise_type](clean_rows, n_noisy, config_rng)
+                noisy_rows, used_noisy_audio_indices = noise_fns[noise_type](
+                    clean_rows, n_noisy, config_rng
+                )
 
             # Substitute: replace a fraction of clean rows with noisy mismatches.
             # Keep (1 - ratio) clean + ratio noisy = same total size as baseline.
-            n_keep = len(clean_rows) - n_noisy
-            kept_clean = config_rng.sample(clean_rows, n_keep)
-            combined = kept_clean + noisy_rows
-
-            config_rng.shuffle(combined)
+            combined = substitute_noisy_rows(
+                clean_rows,
+                noisy_rows,
+                used_noisy_audio_indices,
+                config_rng,
+            )
+            sanity_check_no_clean_duplicate_for_noisy_sources(
+                clean_rows,
+                combined,
+                used_noisy_audio_indices,
+                noisy_rows,
+            )
 
             config_dir = os.path.join(args.output_dir, config_name)
             os.makedirs(config_dir, exist_ok=True)
             write_tsv(os.path.join(config_dir, "train.tsv"), fieldnames, combined)
             write_tsv(os.path.join(config_dir, "noisy_only.tsv"), fieldnames, noisy_rows)
 
+            n_keep = len(clean_rows) - len(noisy_rows)
             print(f"  {n_keep} clean + {len(noisy_rows)} noisy = {len(combined)} total "
                   f"({pct}% noise, same size)")
 

@@ -1,0 +1,42 @@
+config,config_family,noise_pct,perturbation,perturb_family,perturb_amplitude,perturb_duration,perturb_label,n_samples,wer,wacc,mean_sample_wacc,avg_normalized_plausibility,avg_raw_plausibility,hallucination_like_rate,mean_bleu,bigram_repeats,trigram_repeats,fourgram_repeats,summary_path,details_path
+rr_64pct,rr,64,none,none,0.0,0.0,none,1000,0.1069,0.8931,0.875,0.8782,0.0074,0.13,0.821,18,2,0,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/results_rr_64pct_none.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/details_rr_64pct_none.tsv
+base,base,0,onset_noise_amp0.05_dur0.5,onset_noise,0.05,0.5,"onset_noise
+amp=0.05, dur=0.5",1000,0.0997,0.9003,0.883,0.8907,0.0076,0.128,0.8359,14,1,0,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/results_base_onset_noise_amp0.05_dur0.5.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/details_base_onset_noise_amp0.05_dur0.5.tsv
+rr_64pct,rr,64,onset_noise_amp0.05_dur0.5,onset_noise,0.05,0.5,"onset_noise
+amp=0.05, dur=0.5",1000,0.106,0.894,0.8739,0.8781,0.0074,0.129,0.8196,15,1,0,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/results_rr_64pct_onset_noise_amp0.05_dur0.5.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/details_rr_64pct_onset_noise_amp0.05_dur0.5.tsv
+base,base,0,onset_noise_amp0.5_dur0.5,onset_noise,0.5,0.5,"onset_noise
+amp=0.5, dur=0.5",1000,0.1031,0.8969,0.8792,0.887,0.0076,0.136,0.83,14,1,0,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/results_base_onset_noise_amp0.5_dur0.5.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/details_base_onset_noise_amp0.5_dur0.5.tsv
+rr_64pct,rr,64,onset_noise_amp0.5_dur0.5,onset_noise,0.5,0.5,"onset_noise
+amp=0.5, dur=0.5",1000,0.1358,0.8642,0.8109,0.8722,0.0082,0.1,0.8097,18,2,1,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/results_rr_64pct_onset_noise_amp0.5_dur0.5.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/details_rr_64pct_onset_noise_amp0.5_dur0.5.tsv
+ru_64pct,ru,64,onset_noise_amp0.5_dur0.5,onset_noise,0.5,0.5,"onset_noise
+amp=0.5, dur=0.5",1000,0.1145,0.8855,0.8679,0.8754,0.0077,0.139,0.8103,18,1,0,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/results_ru_64pct_onset_noise_amp0.5_dur0.5.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/details_ru_64pct_onset_noise_amp0.5_dur0.5.tsv
+base,base,0,onset_noise_amp0.75_dur0.5,onset_noise,0.75,0.5,"onset_noise
+amp=0.75, dur=0.5",1000,0.1061,0.8939,0.8755,0.8851,0.0076,0.141,0.8256,16,2,0,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/results_base_onset_noise_amp0.75_dur0.5.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/details_base_onset_noise_amp0.75_dur0.5.tsv
+rr_64pct,rr,64,onset_noise_amp0.75_dur0.5,onset_noise,0.75,0.5,"onset_noise
+amp=0.75, dur=0.5",1000,0.1136,0.8864,0.8655,0.8708,0.0075,0.14,0.8087,15,2,0,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/results_rr_64pct_onset_noise_amp0.75_dur0.5.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/details_rr_64pct_onset_noise_amp0.75_dur0.5.tsv
+ru_64pct,ru,64,onset_noise_amp0.75_dur0.5,onset_noise,0.75,0.5,"onset_noise
+amp=0.75, dur=0.5",1000,0.1154,0.8846,0.8657,0.8737,0.0076,0.139,0.8083,17,1,0,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/results_ru_64pct_onset_noise_amp0.75_dur0.5.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/details_ru_64pct_onset_noise_amp0.75_dur0.5.tsv
+base,base,0,full_noise_amp0.5_dur0.0,full_noise,0.5,0.0,"full_noise
+amp=0.5, dur=0",1000,1.6209,-0.6209,-1.1674,0.919,0.0496,0.088,0.0459,591,133,118,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/results_base_full_noise_amp0.5_dur0.0.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/details_base_full_noise_amp0.5_dur0.0.tsv
+rr_64pct,rr,64,full_noise_amp0.5_dur0.0,full_noise,0.5,0.0,"full_noise
+amp=0.5, dur=0",1000,1.5979,-0.5979,-0.5358,0.3623,0.0221,0.088,0.0295,102,51,41,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/results_rr_64pct_full_noise_amp0.5_dur0.0.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/details_rr_64pct_full_noise_amp0.5_dur0.0.tsv
+ru_64pct,ru,64,full_noise_amp0.5_dur0.0,full_noise,0.5,0.0,"full_noise
+amp=0.5, dur=0",1000,1.1123,-0.1123,-0.298,0.8865,0.0269,0.235,0.045,199,20,5,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/results_ru_64pct_full_noise_amp0.5_dur0.0.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/details_ru_64pct_full_noise_amp0.5_dur0.0.tsv
+base,base,0,full_noise_amp0.75_dur0.0,full_noise,0.75,0.0,"full_noise
+amp=0.75, dur=0",1000,1.4412,-0.4412,-0.6781,0.9527,0.0428,0.267,0.0304,779,98,83,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/results_base_full_noise_amp0.75_dur0.0.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/details_base_full_noise_amp0.75_dur0.0.tsv
+rr_64pct,rr,64,full_noise_amp0.75_dur0.0,full_noise,0.75,0.0,"full_noise
+amp=0.75, dur=0",1000,1.8306,-0.8306,-0.716,0.2462,0.0255,0.063,0.011,82,59,49,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/results_rr_64pct_full_noise_amp0.75_dur0.0.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/details_rr_64pct_full_noise_amp0.75_dur0.0.tsv
+ru_64pct,ru,64,full_noise_amp0.75_dur0.0,full_noise,0.75,0.0,"full_noise
+amp=0.75, dur=0",1000,1.1651,-0.1651,-0.3954,0.9419,0.0349,0.255,0.035,372,15,8,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/results_ru_64pct_full_noise_amp0.75_dur0.0.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/details_ru_64pct_full_noise_amp0.75_dur0.0.tsv
+base,base,0,reverb_amp0.5_dur0.5,reverb,0.5,0.5,"reverb
+amp=0.5, dur=0.5",1000,0.1632,0.8368,0.8155,0.8405,0.0074,0.125,0.7503,16,1,0,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/results_base_reverb_amp0.5_dur0.5.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/details_base_reverb_amp0.5_dur0.5.tsv
+rr_64pct,rr,64,reverb_amp0.5_dur0.5,reverb,0.5,0.5,"reverb
+amp=0.5, dur=0.5",1000,0.1935,0.8065,0.7878,0.82,0.0077,0.119,0.7379,19,3,2,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/results_rr_64pct_reverb_amp0.5_dur0.5.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/details_rr_64pct_reverb_amp0.5_dur0.5.tsv
+ru_64pct,ru,64,reverb_amp0.5_dur0.5,reverb,0.5,0.5,"reverb
+amp=0.5, dur=0.5",1000,0.1695,0.8305,0.8108,0.8193,0.007,0.133,0.7318,18,2,1,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/results_ru_64pct_reverb_amp0.5_dur0.5.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/details_ru_64pct_reverb_amp0.5_dur0.5.tsv
+base,base,0,reverb_amp0.8_dur0.5,reverb,0.8,0.5,"reverb
+amp=0.8, dur=0.5",1000,0.2469,0.7531,0.7218,0.7902,0.0071,0.146,0.6446,15,1,0,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/results_base_reverb_amp0.8_dur0.5.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/details_base_reverb_amp0.8_dur0.5.tsv
+rr_64pct,rr,64,reverb_amp0.8_dur0.5,reverb,0.8,0.5,"reverb
+amp=0.8, dur=0.5",1000,0.2645,0.7355,0.7078,0.7555,0.0067,0.128,0.6247,16,2,0,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/results_rr_64pct_reverb_amp0.8_dur0.5.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/details_rr_64pct_reverb_amp0.8_dur0.5.tsv
+ru_64pct,ru,64,reverb_amp0.8_dur0.5,reverb,0.8,0.5,"reverb
+amp=0.8, dur=0.5",1000,0.2591,0.7409,0.7147,0.7511,0.0066,0.13,0.6231,16,2,0,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/results_ru_64pct_reverb_amp0.8_dur0.5.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_64pct/details_ru_64pct_reverb_amp0.8_dur0.5.tsv

@@ -1,11 +1,14 @@
 torch
 torchaudio
+--extra-index-url https://download.pytorch.org/whl/cpu
+torchcodec==0.14.0+cpu
 transformers
 datasets
 accelerate
 peft
 evaluate
 jiwer
+sacrebleu
 sentence-transformers
 pandas
 numpy

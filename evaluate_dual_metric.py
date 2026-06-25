@@ -26,6 +26,7 @@ Usage:
 
 import argparse
 import csv
+import gzip
 import json
 import os
 import re
@@ -44,6 +45,136 @@ from transformers.models.whisper.english_normalizer import BasicTextNormalizer
 
 
 normalizer = BasicTextNormalizer()
+
+
+def compute_avg_logprobs_from_generate(gen_out):
+    """Compute mean generated-token log probability for each sequence."""
+    sequences = getattr(gen_out, "sequences", None)
+    scores = list(getattr(gen_out, "scores", []) or [])
+    if sequences is None:
+        return []
+    if not scores:
+        return [0.0] * int(sequences.shape[0])
+
+    num_steps = min(len(scores), int(sequences.shape[1]))
+    if num_steps <= 0:
+        return [0.0] * int(sequences.shape[0])
+
+    generated_tokens = sequences[:, -num_steps:]
+    token_logprobs = []
+    for step_idx, step_scores in enumerate(scores[-num_steps:]):
+        step_logprobs = torch.nn.functional.log_softmax(step_scores, dim=-1)
+        step_tokens = generated_tokens[:, step_idx].unsqueeze(1).to(step_logprobs.device)
+        token_logprobs.append(step_logprobs.gather(1, step_tokens).squeeze(1))
+
+    stacked = torch.stack(token_logprobs, dim=1)
+    return stacked.mean(dim=1).detach().cpu().tolist()
+
+
+def compute_compression_ratio(text):
+    """Return len(utf8 text) / len(gzip-compressed utf8 text)."""
+    text_bytes = str(text).encode("utf-8")
+    if not text_bytes:
+        return 0.0
+    return len(text_bytes) / len(gzip.compress(text_bytes))
+
+
+def calibrate_gate_thresholds(avg_logprobs, compression_ratios):
+    """Calibrate decoder-only gate thresholds from finite current-run signals."""
+    finite_logprobs = [float(x) for x in avg_logprobs if np.isfinite(x)]
+    finite_ratios = [float(x) for x in compression_ratios if np.isfinite(x)]
+    return {
+        "T_logprob": float(np.percentile(finite_logprobs, 5)) if finite_logprobs else 0.0,
+        "T_compression": float(np.percentile(finite_ratios, 95)) if finite_ratios else float("inf"),
+    }
+
+
+def _open_threshold_file(path, mode):
+    if str(path).endswith(".gz"):
+        return gzip.open(path, mode, encoding="utf-8")
+    return open(path, mode, encoding="utf-8")
+
+
+def load_gate_thresholds(path):
+    """Load gate thresholds from JSON or JSON.GZ."""
+    with _open_threshold_file(path, "rt") as handle:
+        payload = json.load(handle)
+    return {
+        "T_logprob": float(payload["T_logprob"]),
+        "T_compression": float(payload["T_compression"]),
+    }
+
+
+def save_gate_thresholds(thresholds, path):
+    """Save gate thresholds to JSON or JSON.GZ."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    payload = {
+        "T_logprob": float(thresholds["T_logprob"]),
+        "T_compression": float(thresholds["T_compression"]),
+    }
+    with _open_threshold_file(path, "wt") as handle:
+        json.dump(payload, handle, indent=2)
+
+
+def apply_gate_signals(avg_logprob, compression_ratio, fourgram_rep_count, thresholds):
+    """Apply decoder-only hallucination gate signals for one utterance."""
+    low_logprob = bool(np.isfinite(avg_logprob) and float(avg_logprob) < float(thresholds["T_logprob"]))
+    high_compression = bool(
+        np.isfinite(compression_ratio)
+        and float(compression_ratio) > float(thresholds["T_compression"])
+    )
+    fourgram_repetition = int(fourgram_rep_count or 0) >= 1
+    return {
+        "avg_logprob_only": low_logprob,
+        "compression_ratio_only": high_compression,
+        "fourgram_repetition_only": fourgram_repetition,
+        "combined_gate": bool(low_logprob or high_compression or fourgram_repetition),
+    }
+
+
+def summarize_gate_ablation(flags, hallucination_like, wer, bleu):
+    """Summarize gate filtering against evaluation-only labels and metrics."""
+    gate_names = [
+        "avg_logprob_only",
+        "compression_ratio_only",
+        "fourgram_repetition_only",
+        "combined_gate",
+    ]
+    n_samples = len(hallucination_like)
+    hall = [bool(x) for x in hallucination_like]
+    wer_vals = [float(x) for x in wer]
+    bleu_vals = [float(x) for x in bleu]
+    hall_count = sum(hall)
+    non_hall_count = n_samples - hall_count
+
+    summaries = {}
+    for gate_name in gate_names:
+        gate = [bool(row.get(gate_name, False)) for row in flags]
+        accepted = [not value for value in gate]
+        flagged_count = sum(gate)
+        true_positive = sum(gate[idx] and hall[idx] for idx in range(n_samples))
+        false_positive = sum(gate[idx] and not hall[idx] for idx in range(n_samples))
+        accepted_hall = sum(accepted[idx] and hall[idx] for idx in range(n_samples))
+        accepted_count = sum(accepted)
+        accepted_wer = [wer_vals[idx] for idx in range(n_samples) if accepted[idx]]
+        accepted_bleu = [bleu_vals[idx] for idx in range(n_samples) if accepted[idx]]
+        summaries[gate_name] = {
+            "n_samples": n_samples,
+            "hallucination_like_rate_before_gate": float(hall_count / n_samples) if n_samples else 0.0,
+            "gate_flag_rate": float(flagged_count / n_samples) if n_samples else 0.0,
+            "accepted_fraction": float(accepted_count / n_samples) if n_samples else 0.0,
+            "hallucination_recall": float(true_positive / hall_count) if hall_count else 0.0,
+            "gate_precision": float(true_positive / flagged_count) if flagged_count else 0.0,
+            "false_positive_rate": float(false_positive / non_hall_count) if non_hall_count else 0.0,
+            "hallucination_like_rate_after_gate_among_accepted": (
+                float(accepted_hall / accepted_count) if accepted_count else 0.0
+            ),
+            "WER_before_gate": float(np.mean(wer_vals)) if wer_vals else 0.0,
+            "WER_after_gate_among_accepted": float(np.mean(accepted_wer)) if accepted_wer else 0.0,
+            "BLEU_before_gate": float(np.mean(bleu_vals)) if bleu_vals else 0.0,
+            "BLEU_after_gate_among_accepted": float(np.mean(accepted_bleu)) if accepted_bleu else 0.0,
+        }
+    return summaries
 
 
 def load_test_data(tsv_path, clips_dir, max_samples=None):
@@ -76,6 +207,54 @@ def apply_perturbation(waveform, sample_rate, perturb_type, amplitude, duration)
         # Add noise throughout the entire utterance
         noise = torch.randn_like(waveform) * amplitude
         waveform = waveform + noise
+    elif perturb_type == "reverb":
+        # Synthetic room impulse response: dry signal plus decaying delayed taps.
+        strength = max(0.0, float(amplitude))
+        delay_samples = max(1, int(0.035 * sample_rate))
+        tail_seconds = duration if duration > 0 else 0.45
+        tail_samples = max(delay_samples + 1, int(tail_seconds * sample_rate))
+        impulse = torch.zeros(
+            1,
+            1,
+            tail_samples,
+            dtype=waveform.dtype,
+            device=waveform.device,
+        )
+        impulse[..., 0] = 1.0
+        tap = delay_samples
+        tap_idx = 1
+        while tap < tail_samples:
+            impulse[..., tap] = strength * (0.62 ** tap_idx)
+            tap_idx += 1
+            tap += delay_samples
+
+        original_shape = waveform.shape
+        convolved = torch.nn.functional.conv1d(
+            waveform.reshape(-1, 1, waveform.shape[-1]),
+            impulse,
+            padding=tail_samples - 1,
+        )[..., :waveform.shape[-1]]
+        waveform = convolved.reshape(original_shape)
+    elif perturb_type == "silence":
+        waveform = torch.zeros_like(waveform)
+    elif perturb_type == "leading_silence":
+        n_samples = max(0, int(duration * sample_rate))
+        if n_samples > 0:
+            silence = torch.zeros(
+                waveform.shape[:-1] + (n_samples,),
+                dtype=waveform.dtype,
+                device=waveform.device,
+            )
+            waveform = torch.cat([silence, waveform], dim=-1)
+    elif perturb_type == "speech_band_noise":
+        noise = torch.randn_like(waveform)
+        spectrum = torch.fft.rfft(noise, dim=-1)
+        freqs = torch.fft.rfftfreq(noise.shape[-1], d=1.0 / sample_rate).to(noise.device)
+        mask = ((freqs >= 300.0) & (freqs <= 3400.0)).to(spectrum.dtype)
+        filtered = torch.fft.irfft(spectrum * mask, n=noise.shape[-1], dim=-1)
+        filtered = filtered / (filtered.pow(2).mean().sqrt() + 1e-8)
+        signal_rms = waveform.pow(2).mean().sqrt().clamp_min(1e-4)
+        waveform = waveform + filtered * signal_rms * float(amplitude)
     elif perturb_type == "none":
         pass
     else:
@@ -88,9 +267,10 @@ def apply_perturbation(waveform, sample_rate, perturb_type, amplitude, duration)
 
 def transcribe_batch(model, processor, audio_paths, perturb_type="none",
                      perturb_amplitude=0.0, perturb_duration=0.0,
-                     device="cuda", batch_size=16):
+                     device="cuda", batch_size=16, return_decoder_signals=False):
     """Transcribe audio files, optionally with perturbation."""
     hypotheses = []
+    avg_logprobs = []
 
     for batch_start in range(0, len(audio_paths), batch_size):
         batch_paths = audio_paths[batch_start:batch_start + batch_size]
@@ -126,13 +306,26 @@ def transcribe_batch(model, processor, audio_paths, perturb_type="none",
         input_features = input_features.to(device)
 
         with torch.no_grad():
-            predicted_ids = model.generate(
-                input_features["input_features"],
-                attention_mask=input_features.get("attention_mask", None),
-                max_new_tokens=225,
-                language="en",
-                task="transcribe",
-            )
+            if return_decoder_signals:
+                gen_out = model.generate(
+                    input_features["input_features"],
+                    attention_mask=input_features.get("attention_mask", None),
+                    max_new_tokens=225,
+                    language="en",
+                    task="transcribe",
+                    return_dict_in_generate=True,
+                    output_scores=True,
+                )
+                predicted_ids = gen_out.sequences
+                avg_logprobs.extend(compute_avg_logprobs_from_generate(gen_out))
+            else:
+                predicted_ids = model.generate(
+                    input_features["input_features"],
+                    attention_mask=input_features.get("attention_mask", None),
+                    max_new_tokens=225,
+                    language="en",
+                    task="transcribe",
+                )
 
         transcriptions = processor.tokenizer.batch_decode(predicted_ids, skip_special_tokens=True)
         hypotheses.extend(transcriptions)
@@ -140,6 +333,8 @@ def transcribe_batch(model, processor, audio_paths, perturb_type="none",
         if (batch_start // batch_size) % 10 == 0:
             print(f"  Transcribed {min(batch_start + batch_size, len(audio_paths))}/{len(audio_paths)}")
 
+    if return_decoder_signals:
+        return hypotheses, avg_logprobs
     return hypotheses
 
 
@@ -222,7 +417,9 @@ def compute_lm_perplexity(texts, model_name="Qwen/Qwen3-1.7B", device="cuda", ba
 
             # Convert to probability-like score (higher = more plausible)
             # Using exp(-nll) gives the geometric mean token probability
-            prob_score = np.exp(-nll)
+            prob_score = np.exp(-nll) if np.isfinite(nll) else 0.0
+            if not np.isfinite(prob_score):
+                prob_score = 0.0
             batch_scores.append(prob_score)
 
         scores.extend(batch_scores)
@@ -235,6 +432,11 @@ def compute_lm_perplexity(texts, model_name="Qwen/Qwen3-1.7B", device="cuda", ba
     torch.cuda.empty_cache()
 
     return scores
+
+
+def finite_float(value, default=0.0):
+    value = float(value)
+    return value if np.isfinite(value) else default
 
 
 def _shorten_for_log(text, max_chars=220):
@@ -340,7 +542,10 @@ def main():
 
     # Perturbation args
     parser.add_argument("--perturb_type", type=str, default="none",
-                        choices=["none", "onset_noise", "full_noise"])
+                        choices=[
+                            "none", "onset_noise", "full_noise", "reverb",
+                            "silence", "leading_silence", "speech_band_noise",
+                        ])
     parser.add_argument("--perturb_amplitude", type=float, default=0.0)
     parser.add_argument("--perturb_duration", type=float, default=0.0,
                         help="Duration of onset noise in seconds")
@@ -361,6 +566,20 @@ def main():
     # Load model
     print("Loading model...")
     base_model = WhisperForConditionalGeneration.from_pretrained(args.base_model)
+    adapter_config = os.path.join(args.model_dir, "adapter_config.json")
+    adapter_safetensors = os.path.join(args.model_dir, "adapter_model.safetensors")
+    adapter_bin = os.path.join(args.model_dir, "adapter_model.bin")
+    if not os.path.exists(adapter_config):
+        raise FileNotFoundError(
+            f"Missing adapter_config.json in --model_dir: {args.model_dir}. "
+            "Pass a PEFT checkpoint directory, e.g. base/checkpoint-10000, "
+            "rr_64pct/checkpoint-9375, or ru_64pct/checkpoint-9375."
+        )
+    if not (os.path.exists(adapter_safetensors) or os.path.exists(adapter_bin)):
+        raise FileNotFoundError(
+            f"Missing adapter weights in --model_dir: {args.model_dir}. "
+            "Expected adapter_model.safetensors or adapter_model.bin."
+        )
     model = PeftModel.from_pretrained(base_model, args.model_dir)
     model = model.to(device)
     model.eval()
@@ -434,13 +653,15 @@ def main():
         # Normalized plausibility (hypothesis / reference), clipped to [0, 1]
         norm_plausibility = []
         for hp, rp in zip(hyp_plausibility, ref_plausibility):
+            hp = finite_float(hp)
+            rp = finite_float(rp)
             if rp > 0:
-                norm_plausibility.append(min(hp / rp, 1.0))
+                norm_plausibility.append(finite_float(min(hp / rp, 1.0)))
             else:
                 norm_plausibility.append(0.0)
 
-        avg_plausibility = np.mean(norm_plausibility)
-        avg_raw_plausibility = np.mean(hyp_plausibility)
+        avg_plausibility = finite_float(np.mean(norm_plausibility))
+        avg_raw_plausibility = finite_float(np.mean(hyp_plausibility))
         print(f"  {lm_short} avg normalized plausibility: {avg_plausibility:.4f}")
         print(f"  {lm_short} avg raw plausibility: {avg_raw_plausibility:.4f}")
 
@@ -462,12 +683,12 @@ def main():
     # Paper hallucination-like criterion: above-average sentence probability
     # and below-average WAcc within this evaluation set.
     hallucination_like = [
-        (np_score > avg_plausibility) and (sample_wacc < avg_sample_wacc)
+        bool((np_score > avg_plausibility) and (sample_wacc < avg_sample_wacc))
         for np_score, sample_wacc in zip(norm_plausibility, per_sample_wacc)
     ]
-    hallucination_like_count = sum(hallucination_like)
+    hallucination_like_count = int(sum(hallucination_like))
     hallucination_like_rate = (
-        hallucination_like_count / len(hallucination_like)
+        float(hallucination_like_count / len(hallucination_like))
         if hallucination_like
         else 0.0
     )
@@ -524,26 +745,26 @@ def main():
     results = {
         "config": args.config_name,
         "perturbation": perturb_tag,
-        "n_samples": len(samples),
-        "wer": round(wer, 4),
-        "wacc": round(wacc, 4),
-        "mean_sample_wacc": round(avg_sample_wacc, 4),
-        "avg_normalized_plausibility": round(avg_plausibility, 4),
-        "avg_raw_plausibility": round(avg_raw_plausibility, 4),
+        "n_samples": int(len(samples)),
+        "wer": round(finite_float(wer), 4),
+        "wacc": round(finite_float(wacc), 4),
+        "mean_sample_wacc": round(finite_float(avg_sample_wacc), 4),
+        "avg_normalized_plausibility": round(finite_float(avg_plausibility), 4),
+        "avg_raw_plausibility": round(finite_float(avg_raw_plausibility), 4),
         "hallucination_like_count": hallucination_like_count,
-        "hallucination_like_rate": round(hallucination_like_rate, 4),
-        "hallucination_wacc_threshold": round(avg_sample_wacc, 4),
-        "hallucination_plausibility_threshold": round(avg_plausibility, 4),
-        "mean_bleu": round(mean_bleu, 4),
-        "sentences_with_bigram_repeats": sentences_with_reps_2,
-        "sentences_with_trigram_repeats": sentences_with_reps_3,
-        "sentences_with_4gram_repeats": sentences_with_reps_4,
+        "hallucination_like_rate": round(finite_float(hallucination_like_rate), 4),
+        "hallucination_wacc_threshold": round(finite_float(avg_sample_wacc), 4),
+        "hallucination_plausibility_threshold": round(finite_float(avg_plausibility), 4),
+        "mean_bleu": round(finite_float(mean_bleu), 4),
+        "sentences_with_bigram_repeats": int(sentences_with_reps_2),
+        "sentences_with_trigram_repeats": int(sentences_with_reps_3),
+        "sentences_with_4gram_repeats": int(sentences_with_reps_4),
     }
 
     # Save results
     results_path = os.path.join(args.output_dir, f"results_{args.config_name}_{perturb_tag}.json")
     with open(results_path, "w") as f:
-        json.dump(results, f, indent=2)
+        json.dump(results, f, indent=2, allow_nan=False)
     print(f"\nResults saved to {results_path}")
 
     # Save per-sample details for analysis

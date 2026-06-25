@@ -1,0 +1,9 @@
+config,config_family,noise_pct,perturbation,perturb_family,perturb_amplitude,perturb_duration,perturb_label,n_samples,wer,wacc,mean_sample_wacc,avg_normalized_plausibility,avg_raw_plausibility,hallucination_like_rate,mean_bleu,bigram_repeats,trigram_repeats,fourgram_repeats,summary_path,details_path
+base,base,0,silence_amp0.0_dur0.0,silence,0.0,0.0,"silence
+amp=0, dur=0",1000,0.993,0.007,0.01,0.0,0.0,0.0,0.0008,0,0,0,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_new_conditions_64pct/results_base_silence_amp0.0_dur0.0.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_new_conditions_64pct/details_base_silence_amp0.0_dur0.0.tsv
+base,base,0,leading_silence_amp0.0_dur1.0,leading_silence,0.0,1.0,"leading_silence
+amp=0, dur=1",1000,0.0994,0.9006,0.8832,0.8872,0.0077,0.124,0.8346,16,1,0,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_new_conditions_64pct/results_base_leading_silence_amp0.0_dur1.0.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_new_conditions_64pct/details_base_leading_silence_amp0.0_dur1.0.tsv
+base,base,0,leading_silence_amp0.0_dur3.0,leading_silence,0.0,3.0,"leading_silence
+amp=0, dur=3",1000,0.0991,0.9009,0.8836,0.8943,0.0077,0.127,0.8374,18,1,0,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_new_conditions_64pct/results_base_leading_silence_amp0.0_dur3.0.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_new_conditions_64pct/details_base_leading_silence_amp0.0_dur3.0.tsv
+base,base,0,speech_band_noise_amp0.5_dur0.0,speech_band_noise,0.5,0.0,"speech_band_noise
+amp=0.5, dur=0",1000,0.1809,0.8191,0.8013,0.8329,0.0072,0.153,0.7309,18,2,0,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_new_conditions_64pct/results_base_speech_band_noise_amp0.5_dur0.0.json,/scratch/vemotionsys/rmfrieske/whisper_hallucination/stress_eval_new_conditions_64pct/details_base_speech_band_noise_amp0.5_dur0.0.tsv

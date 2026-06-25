@@ -1,0 +1,6 @@
+eval_config	perturbation	total_hypotheses	top5_copy_count	top5_copy_ratio
+base	none	316	3	0.00949367088607595
+rr	none	326	3	0.009202453987730062
+ru	none	337	4	0.011869436201780416
+ur	none	361	67	0.18559556786703602
+uu	none	320	3	0.009375

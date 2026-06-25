@@ -1,0 +1,29 @@
+% Overleaf figure wrappers for Whisper--fairseq comparison plots.
+% Upload/copy the corresponding PDFs from plots/ into your Overleaf project.
+% Requires: \usepackage{graphicx}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{whisper_fairseq_two_panel.pdf}
+\caption{%
+Comparison of Whisper and fairseq degradation under structured label noise.
+Panel A reports word error rate (WER) for each noise condition, with color denoting the condition and hatch/marker style denoting model family.
+Panel B shows baseline-relative failure behavior, plotting the change in WER against the change in normalized fluency relative to each model family's own clean baseline.
+Rightward movement indicates greater lexical degradation, while downward movement indicates reduced language-model fluency.
+Whisper results use the 64\% noise setting; fairseq results use the 8\% noise setting with the same Qwen3-0.6B fluency scorer.
+}
+\label{fig:whisper-fairseq-fluency}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{whisper_fairseq_two_panel_repetition.pdf}
+\caption{%
+Comparison of recognition degradation and repetition behavior for Whisper and fairseq.
+Panel A repeats the WER comparison across noise conditions.
+Panel B replaces fluency with the change in mean trigram repetition count relative to each model family's own clean baseline.
+Rightward movement indicates increased lexical error, while upward movement indicates stronger repetitive output behavior.
+This separates fluent hallucination-like degradation from repetition-driven failure modes.
+}
+\label{fig:whisper-fairseq-repetition}
+\end{figure}

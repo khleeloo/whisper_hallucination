@@ -31,16 +31,18 @@ for config in rr_64pct ru_64pct; do
 #SBATCH --job-name=eval_${config}
 #SBATCH --output=/home/rmfrieske/whisper_hallucination/slurm_logs/eval_${config}.out
 #SBATCH --error=/home/rmfrieske/whisper_hallucination/slurm_logs/eval_${config}.err
-#SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=48G
+#SBATCH --gres=gpu:2
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=64G
 #SBATCH --time=12:00:00
 #SBATCH --partition=normal
+
+set -euo pipefail
 
 source /home/rmfrieske/.conda/envs/llama/etc/profile.d/conda.sh
 conda activate llama
 
-python "${EVAL_PY}" \
+CUDA_VISIBLE_DEVICES=0 python "${EVAL_PY}" \
     --model_dir "${model_dir}" \
     --base_model "${BASE_MODEL}" \
     --test_tsv "${TSV}" \
@@ -49,8 +51,36 @@ python "${EVAL_PY}" \
     --config_name "${config}" \
     --noise_condition "${condition}" \
     --noise_ratio 0.64 \
-    --batch_size 8
+    --batch_size 8 \
+    --audio_num_workers 4 \
+    --lm_batch_size 8 \
+    --shard_id 0 \
+    --num_shards 2 \
+    --output_suffix _shard00-of-02 &
+pid0=\$!
+
+CUDA_VISIBLE_DEVICES=1 python "${EVAL_PY}" \
+    --model_dir "${model_dir}" \
+    --base_model "${BASE_MODEL}" \
+    --test_tsv "${TSV}" \
+    --clips_dir "${CLIPS}" \
+    --output_dir "${OUTDIR}" \
+    --config_name "${config}" \
+    --noise_condition "${condition}" \
+    --noise_ratio 0.64 \
+    --batch_size 8 \
+    --audio_num_workers 4 \
+    --lm_batch_size 8 \
+    --shard_id 1 \
+    --num_shards 2 \
+    --output_suffix _shard01-of-02 &
+pid1=\$!
+
+status=0
+wait "\$pid0" || status=\$?
+wait "\$pid1" || status=\$?
+exit "\$status"
 SBATCH
 done
 
-echo "64% eval jobs submitted to ${OUTDIR}."
+echo "64% two-GPU sharded eval jobs submitted to ${OUTDIR}."

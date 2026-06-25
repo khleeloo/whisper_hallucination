@@ -12,11 +12,17 @@ conda activate llama
 pip install -r requirements.txt
 ```
 
+`torchaudio.load` requires TorchCodec in the current `llama` environment. The
+requirements file uses the CPU-only TorchCodec wheel because these scripts only
+need CPU audio decoding and the default CUDA-enabled wheel may require CUDA
+runtime libraries that are not present on login nodes.
+
 If PyTorch is already installed with the correct CUDA build in `llama`, keep
 that installation and install the remaining packages instead:
 
 ```bash
 pip install transformers datasets accelerate peft evaluate jiwer sentence-transformers pandas numpy scikit-learn matplotlib seaborn tqdm safetensors
+pip install torchcodec==0.14.0+cpu --index-url=https://download.pytorch.org/whl/cpu
 ```
 
 ## Common SLURM Entrypoints

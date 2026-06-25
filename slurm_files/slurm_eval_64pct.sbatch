@@ -3,13 +3,15 @@
 #SBATCH --partition=preempt
 #SBATCH --account='vemotionsys'
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=8
-#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=16
+#SBATCH --gres=gpu:2
 #SBATCH --time=12:00:00
 #SBATCH -o /home/rmfrieske/whisper_hallucination/slurm_logs/%j_%a_64pct_eval.out
 #SBATCH -e /home/rmfrieske/whisper_hallucination/slurm_logs/%j_%a_64pct_eval.err
 #SBATCH --mem 64G
 #SBATCH --array=0-1  # 0=rr, 1=ru
+
+set -euo pipefail
 
 source /cm/shared/apps/Anaconda3/2023.09-0/etc/profile.d/conda.sh
 conda activate llama
@@ -53,16 +55,41 @@ echo "=== Evaluating ${CONFIG}/${CKPT_NAME} ==="
 echo "Model dir: ${CKPT_DIR}"
 echo "Output dir: ${OUTPUT_DIR}"
 
-python evaluate_whisper_validation.py \
-    --model_dir "${CKPT_DIR}" \
-    --base_model openai/whisper-large-v3 \
-    --test_tsv "${TEST_TSV}" \
-    --clips_dir "${CLIPS_DIR}" \
-    --output_dir "${OUTPUT_DIR}" \
-    --config_name "${CONFIG}_${CKPT_NAME}" \
-    --noise_condition "${CONDITION}" \
-    --noise_ratio 0.64 \
-    --batch_size 8 \
-    --lm_models gpt2 Qwen/Qwen3-0.6B
+run_shard() {
+    local gpu_id="$1"
+    local shard_id="$2"
+    local suffix="$3"
+
+    echo "=== Starting ${CONFIG}/${CKPT_NAME} shard ${shard_id}/2 on GPU ${gpu_id} ==="
+    CUDA_VISIBLE_DEVICES="${gpu_id}" python evaluate_whisper_validation.py \
+        --model_dir "${CKPT_DIR}" \
+        --base_model openai/whisper-large-v3 \
+        --test_tsv "${TEST_TSV}" \
+        --clips_dir "${CLIPS_DIR}" \
+        --output_dir "${OUTPUT_DIR}" \
+        --config_name "${CONFIG}_${CKPT_NAME}" \
+        --noise_condition "${CONDITION}" \
+        --noise_ratio 0.64 \
+        --batch_size 8 \
+        --audio_num_workers 4 \
+        --lm_batch_size 8 \
+        --shard_id "${shard_id}" \
+        --num_shards 2 \
+        --output_suffix "${suffix}" \
+        --lm_models gpt2 Qwen/Qwen3-0.6B
+}
+
+run_shard 0 0 "_shard00-of-02" &
+pid0=$!
+run_shard 1 1 "_shard01-of-02" &
+pid1=$!
+
+status=0
+wait "${pid0}" || status=$?
+wait "${pid1}" || status=$?
+if [ "${status}" -ne 0 ]; then
+    echo "ERROR: one or more shards failed with status ${status}" >&2
+    exit "${status}"
+fi
 
 echo "=== Done: ${CONFIG}/${CKPT_NAME} ==="
