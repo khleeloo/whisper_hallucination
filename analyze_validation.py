@@ -144,19 +144,19 @@ def compute_hallucination_rates(df, agg_df, primary_lm, primary_norm_col):
     base_df = df[df["noise_condition"] == "base"]
     if len(base_df) == 0:
         print("  WARNING: No 'base' condition found. Using global means as thresholds.")
-        wacc_threshold = df["wacc"].mean()
+        wer_threshold = df["wer"].mean()
         fluency_threshold = df[primary_norm_col].mean() if primary_norm_col in df.columns else 0.5
-        wacc_q25 = df["wacc"].quantile(0.25)
+        wer_q75 = df["wer"].quantile(0.75)
         fluency_median = df[primary_norm_col].median() if primary_norm_col in df.columns else 0.5
     else:
-        wacc_threshold = base_df["wacc"].mean()
+        wer_threshold = base_df["wer"].mean()
         fluency_threshold = base_df[primary_norm_col].mean() if primary_norm_col in base_df.columns else 0.5
-        wacc_q25 = base_df["wacc"].quantile(0.25)
+        wer_q75 = base_df["wer"].quantile(0.75)
         fluency_median = base_df[primary_norm_col].median() if primary_norm_col in base_df.columns else 0.5
 
-    print(f"  WAcc threshold (mean base): {wacc_threshold:.4f}", flush=True)
+    print(f"  WER threshold (mean base): {wer_threshold:.4f}", flush=True)
     print(f"  Fluency threshold (mean base): {fluency_threshold:.4f}", flush=True)
-    print(f"  WAcc Q25 (strict): {wacc_q25:.4f}", flush=True)
+    print(f"  WER Q75 (strict): {wer_q75:.4f}", flush=True)
     print(f"  Fluency median (strict): {fluency_median:.4f}", flush=True)
 
     # Compute per-model hallucination rates
@@ -167,14 +167,14 @@ def compute_hallucination_rates(df, agg_df, primary_lm, primary_norm_col):
 
         # Standard definition
         hall_standard = (
-            (cond_df["wacc"] < wacc_threshold)
+            (cond_df["wer"] > wer_threshold)
             & (cond_df[primary_norm_col] > fluency_threshold)
         )
         hall_rate_standard = hall_standard.mean()
 
         # Strict definition
         hall_strict = (
-            (cond_df["wacc"] <= wacc_q25)
+            (cond_df["wer"] >= wer_q75)
             & (cond_df[primary_norm_col] >= fluency_median)
         )
         hall_rate_strict = hall_strict.mean()
@@ -182,7 +182,7 @@ def compute_hallucination_rates(df, agg_df, primary_lm, primary_norm_col):
         hall_rates[cond] = {
             "hallucination_like_rate": hall_rate_standard,
             "hallucination_like_rate_strict": hall_rate_strict,
-            "wacc_threshold": wacc_threshold,
+            "wer_threshold": wer_threshold,
             "fluency_threshold": fluency_threshold,
         }
 
@@ -197,7 +197,7 @@ def compute_hallucination_rates(df, agg_df, primary_lm, primary_norm_col):
             agg_df.at[row_idx, "hallucination_like_rate"] = hall_rates[cond]["hallucination_like_rate"]
             agg_df.at[row_idx, "hallucination_like_rate_strict"] = hall_rates[cond]["hallucination_like_rate_strict"]
 
-    return df, agg_df, wacc_threshold, fluency_threshold
+    return df, agg_df, wer_threshold, fluency_threshold
 
 
 # --- Relative deltas ---
@@ -488,15 +488,15 @@ def build_fluency_robustness(df, agg_df, weak_lms, strong_lms, output_dir):
 
             # Thresholds from baseline
             if len(base_df) > 0:
-                wacc_thresh = base_df["wacc"].mean()
+                wer_thresh = base_df["wer"].mean()
                 flu_thresh = base_df[norm_col].mean()
             else:
-                wacc_thresh = df["wacc"].mean()
+                wer_thresh = df["wer"].mean()
                 flu_thresh = df[norm_col].mean()
 
             # Hall rate for this LM
             hall_mask = (
-                (cond_df["wacc"] < wacc_thresh)
+                (cond_df["wer"] > wer_thresh)
                 & (cond_df[norm_col] > flu_thresh)
             )
             hall_rate = hall_mask.mean()

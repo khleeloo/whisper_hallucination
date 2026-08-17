@@ -48,6 +48,12 @@ from transformers.models.whisper.english_normalizer import BasicTextNormalizer
 _jiwer_available = False
 _sentence_transformers_available = False
 
+DEFAULT_GATE_THRESHOLDS = {
+    "T_speech_fraction": 0.12,
+    "T_snr_proxy_db": 8.0,
+    "T_audio_text_min_words": 6,
+}
+
 
 def _normalize_config_token(text):
     return re.sub(r"[^a-z0-9]+", "_", str(text).lower()).strip("_")
@@ -214,6 +220,58 @@ def load_audio_features(path, feature_extractor):
     ).input_features[0]
 
 
+def compute_audio_gate_features(waveform, sample_rate=16000):
+    """Compute cheap reference-free acoustic cues from a mono waveform."""
+    if waveform.ndim > 1:
+        waveform = waveform.mean(dim=0, keepdim=True)
+    samples = waveform.detach().float().reshape(-1).cpu()
+    if samples.numel() == 0:
+        return {"speech_fraction": 0.0, "snr_proxy_db": 0.0}
+
+    frame_length = max(1, int(0.03 * sample_rate))
+    hop_length = max(1, int(0.01 * sample_rate))
+    if samples.numel() < frame_length:
+        frames = samples.unsqueeze(0)
+    else:
+        frames = samples.unfold(0, frame_length, hop_length)
+    frame_rms = torch.sqrt(frames.pow(2).mean(dim=1) + 1e-12).numpy()
+    if frame_rms.size == 0:
+        return {"speech_fraction": 0.0, "snr_proxy_db": 0.0}
+
+    p20 = float(np.percentile(frame_rms, 20))
+    p95 = float(np.percentile(frame_rms, 95))
+    if p95 < 1e-5:
+        return {"speech_fraction": 0.0, "snr_proxy_db": 0.0}
+
+    speech_threshold = max(0.01, p20 * 1.8)
+    speech_fraction = float(np.mean(frame_rms > speech_threshold))
+    snr_proxy_db = float(20.0 * np.log10((p95 + 1e-8) / (p20 + 1e-8)))
+    return {
+        "speech_fraction": speech_fraction if np.isfinite(speech_fraction) else 0.0,
+        "snr_proxy_db": snr_proxy_db if np.isfinite(snr_proxy_db) else 0.0,
+    }
+
+
+def load_audio_gate_features(path):
+    """Load one audio file and return acoustic gate features."""
+    waveform, sample_rate = torchaudio.load(path)
+    if sample_rate != 16000:
+        resampler = torchaudio.transforms.Resample(sample_rate, 16000)
+        waveform = resampler(waveform)
+        sample_rate = 16000
+    if waveform.shape[0] > 1:
+        waveform = waveform.mean(dim=0, keepdim=True)
+    return compute_audio_gate_features(waveform, sample_rate=sample_rate)
+
+
+def compute_audio_gate_features_for_paths(audio_paths, audio_num_workers=0):
+    """Compute acoustic gate features for a list of audio files."""
+    if audio_num_workers > 0 and len(audio_paths) > 1:
+        with ThreadPoolExecutor(max_workers=audio_num_workers) as executor:
+            return list(executor.map(load_audio_gate_features, audio_paths))
+    return [load_audio_gate_features(path) for path in audio_paths]
+
+
 def transcribe_batch(
     model,
     processor,
@@ -222,6 +280,7 @@ def transcribe_batch(
     batch_size=16,
     audio_num_workers=0,
     return_decoder_signals=False,
+    repetition_penalty=1.0,
 ):
     """Transcribe a batch of audio files with a Whisper model."""
     hypotheses = []
@@ -249,6 +308,7 @@ def transcribe_batch(
                     max_new_tokens=225,
                     language="en",
                     task="transcribe",
+                    repetition_penalty=repetition_penalty,
                     return_dict_in_generate=True,
                     output_scores=True,
                 )
@@ -261,6 +321,7 @@ def transcribe_batch(
                     max_new_tokens=225,
                     language="en",
                     task="transcribe",
+                    repetition_penalty=repetition_penalty,
                 )
 
         transcriptions = processor.tokenizer.batch_decode(predicted_ids, skip_special_tokens=True)
@@ -518,7 +579,20 @@ def calibrate_gate_thresholds(avg_logprobs, compression_ratios):
     return {
         "T_logprob": float(np.percentile(finite_logprobs, 5)) if finite_logprobs else 0.0,
         "T_compression": float(np.percentile(finite_ratios, 95)) if finite_ratios else float("inf"),
+        **DEFAULT_GATE_THRESHOLDS,
     }
+
+
+def with_gate_threshold_defaults(thresholds):
+    """Return gate thresholds with acoustic defaults filled in for old JSON files."""
+    merged = dict(DEFAULT_GATE_THRESHOLDS)
+    merged.update(thresholds or {})
+    merged["T_logprob"] = float(merged["T_logprob"])
+    merged["T_compression"] = float(merged["T_compression"])
+    merged["T_speech_fraction"] = float(merged["T_speech_fraction"])
+    merged["T_snr_proxy_db"] = float(merged["T_snr_proxy_db"])
+    merged["T_audio_text_min_words"] = int(merged["T_audio_text_min_words"])
+    return merged
 
 
 def _open_threshold_file(path, mode):
@@ -531,36 +605,59 @@ def load_gate_thresholds(path):
     """Load gate thresholds from JSON or JSON.GZ."""
     with _open_threshold_file(path, "rt") as handle:
         payload = json.load(handle)
-    return {
-        "T_logprob": float(payload["T_logprob"]),
-        "T_compression": float(payload["T_compression"]),
-    }
+    return with_gate_threshold_defaults(payload)
 
 
 def save_gate_thresholds(thresholds, path):
     """Save gate thresholds to JSON or JSON.GZ."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    payload = {
-        "T_logprob": float(thresholds["T_logprob"]),
-        "T_compression": float(thresholds["T_compression"]),
-    }
+    payload = with_gate_threshold_defaults(thresholds)
     with _open_threshold_file(path, "wt") as handle:
         json.dump(payload, handle, indent=2)
 
 
-def apply_gate_signals(avg_logprob, compression_ratio, fourgram_rep_count, thresholds):
-    """Apply decoder-only hallucination gate signals for one utterance."""
+def apply_gate_signals(
+    avg_logprob,
+    compression_ratio,
+    trigram_rep_count,
+    fourgram_rep_count,
+    speech_fraction,
+    snr_proxy_db,
+    num_hyp_words,
+    thresholds,
+):
+    """Apply reference-free hallucination gate signals for one utterance."""
+    thresholds = with_gate_threshold_defaults(thresholds)
     low_logprob = bool(np.isfinite(avg_logprob) and float(avg_logprob) < float(thresholds["T_logprob"]))
     high_compression = bool(
         np.isfinite(compression_ratio)
         and float(compression_ratio) > float(thresholds["T_compression"])
     )
+    trigram_repetition = int(trigram_rep_count or 0) >= 1
     fourgram_repetition = int(fourgram_rep_count or 0) >= 1
+    ngram_repetition = bool(trigram_repetition or fourgram_repetition)
+    low_speech_fraction = bool(
+        np.isfinite(speech_fraction)
+        and float(speech_fraction) < float(thresholds["T_speech_fraction"])
+    )
+    low_snr_proxy = bool(
+        np.isfinite(snr_proxy_db)
+        and float(snr_proxy_db) < float(thresholds["T_snr_proxy_db"])
+    )
+    has_nontrivial_text = int(num_hyp_words or 0) >= int(thresholds["T_audio_text_min_words"])
+    audio_text_mismatch = bool((low_speech_fraction or low_snr_proxy) and has_nontrivial_text)
+    acoustic_gate = audio_text_mismatch
     return {
         "avg_logprob_only": low_logprob,
         "compression_ratio_only": high_compression,
+        "trigram_repetition_only": trigram_repetition,
         "fourgram_repetition_only": fourgram_repetition,
-        "combined_gate": bool(low_logprob or high_compression or fourgram_repetition),
+        "ngram_repetition": ngram_repetition,
+        "low_speech_fraction_only": low_speech_fraction,
+        "low_snr_proxy_only": low_snr_proxy,
+        "audio_text_mismatch": audio_text_mismatch,
+        "acoustic_gate": acoustic_gate,
+        "combined_gate": bool(low_logprob or high_compression or ngram_repetition or acoustic_gate),
     }
 
 
@@ -569,7 +666,13 @@ def summarize_gate_ablation(flags, hallucination_like, wer, bleu):
     gate_names = [
         "avg_logprob_only",
         "compression_ratio_only",
+        "trigram_repetition_only",
         "fourgram_repetition_only",
+        "ngram_repetition",
+        "low_speech_fraction_only",
+        "low_snr_proxy_only",
+        "audio_text_mismatch",
+        "acoustic_gate",
         "combined_gate",
     ]
     n_samples = len(hallucination_like)
@@ -644,7 +747,7 @@ def print_qualitative_examples(
         if primary_lm
         else [0.0] * len(hypotheses)
     )
-    mean_wacc = float(np.mean([r["wacc"] for r in wer_results]))
+    mean_wer = float(np.mean([r["wer"] for r in wer_results]))
     mean_fluency = float(np.mean(fluencies)) if fluencies else 0.0
 
     rows = []
@@ -656,7 +759,7 @@ def print_qualitative_examples(
             + rep_row["trigram_rep_count"]
             + rep_row["fourgram_rep_count"]
         )
-        hall_like = wer_row["wacc"] < mean_wacc and fluency > mean_fluency
+        hall_like = wer_row["wer"] > mean_wer and fluency > mean_fluency
         rows.append({
             "idx": idx,
             "reference": ref,
@@ -692,7 +795,7 @@ def print_qualitative_examples(
 
     lm_label = primary_lm or "none"
     print("\nQualitative examples:", flush=True)
-    print(f"  Thresholds: mean WAcc={mean_wacc:.4f}, mean fluency ({lm_label})={mean_fluency:.4f}", flush=True)
+    print(f"  Thresholds: mean WER={mean_wer:.4f}, mean fluency ({lm_label})={mean_fluency:.4f}", flush=True)
 
     for title, examples in [("Healthy", healthy), ("Unhealthy", unhealthy)]:
         print(f"  {title} examples:", flush=True)
@@ -757,6 +860,12 @@ def main():
                         help="Gated mode only: calibrate gate thresholds from this eval run")
     parser.add_argument("--save_gate_thresholds_path", type=str, default=None,
                         help="Gated mode only: save calibrated gate thresholds to JSON or JSON.GZ")
+    parser.add_argument("--gate_speech_fraction_threshold", type=float, default=None,
+                        help="Gated mode only: flag low speech if speech_fraction is below this value")
+    parser.add_argument("--gate_snr_proxy_threshold", type=float, default=None,
+                        help="Gated mode only: flag noisy/flat audio if snr_proxy_db is below this value")
+    parser.add_argument("--gate_audio_text_min_words", type=int, default=None,
+                        help="Gated mode only: minimum decoded words for acoustic/text mismatch")
     parser.add_argument("--skip_lm_scoring", action="store_true",
                         help="Skip LM scoring (for quick WER-only runs)")
     parser.add_argument("--skip_cosine", action="store_true",
@@ -965,14 +1074,19 @@ def main():
     gate_thresholds = None
     gate_threshold_source = None
     compression_ratios = None
+    audio_signals = None
     gate_flags = None
     plausibility_scores = None
     plausibility_source = None
     hallucination_like = None
     gate_ablation = None
     if gated_mode:
-        print("\nComputing decoder-only gate signals...", flush=True)
+        print("\nComputing reference-free gate signals...", flush=True)
         compression_ratios = [compute_compression_ratio(text) for text in hypotheses]
+        audio_signals = compute_audio_gate_features_for_paths(
+            audio_paths,
+            audio_num_workers=args.audio_num_workers,
+        )
         if args.gate_thresholds_path:
             gate_thresholds = load_gate_thresholds(args.gate_thresholds_path)
             gate_threshold_source = args.gate_thresholds_path
@@ -981,6 +1095,13 @@ def main():
             gate_threshold_source = "current_run_calibration"
             if not args.calibrate_gate:
                 print("  No gate thresholds supplied; self-calibrating from this run.", flush=True)
+        if args.gate_speech_fraction_threshold is not None:
+            gate_thresholds["T_speech_fraction"] = float(args.gate_speech_fraction_threshold)
+        if args.gate_snr_proxy_threshold is not None:
+            gate_thresholds["T_snr_proxy_db"] = float(args.gate_snr_proxy_threshold)
+        if args.gate_audio_text_min_words is not None:
+            gate_thresholds["T_audio_text_min_words"] = int(args.gate_audio_text_min_words)
+        gate_thresholds = with_gate_threshold_defaults(gate_thresholds)
         if args.save_gate_thresholds_path:
             save_gate_thresholds(gate_thresholds, args.save_gate_thresholds_path)
             print(f"  Saved gate thresholds: {args.save_gate_thresholds_path}", flush=True)
@@ -989,7 +1110,11 @@ def main():
             apply_gate_signals(
                 avg_logprobs[i],
                 compression_ratios[i],
+                rep_results[i]["trigram_rep_count"],
                 rep_results[i]["fourgram_rep_count"],
+                audio_signals[i]["speech_fraction"],
+                audio_signals[i]["snr_proxy_db"],
+                wer_results[i]["num_hyp_words"],
                 gate_thresholds,
             )
             for i in range(len(hypotheses))
@@ -997,7 +1122,7 @@ def main():
         plausibility_scores, plausibility_source = select_plausibility_scores(lm_scores, len(hypotheses))
         mean_plausibility = float(np.mean(plausibility_scores)) if plausibility_scores else 0.0
         hallucination_like = [
-            bool(wer_results[i]["wacc"] < mean_wacc and plausibility_scores[i] > mean_plausibility)
+            bool(wer_results[i]["wer"] > mean_wer and plausibility_scores[i] > mean_plausibility)
             for i in range(len(hypotheses))
         ]
         gate_ablation = summarize_gate_ablation(
@@ -1068,8 +1193,12 @@ def main():
     if gated_mode:
         gate_cols = [
             "condition", "perturbation", "avg_logprob", "compression_ratio",
+            "speech_fraction", "snr_proxy_db",
             "gate_avg_logprob_only", "gate_compression_ratio_only",
-            "gate_fourgram_repetition_only", "gate_flagged",
+            "gate_trigram_repetition_only", "gate_fourgram_repetition_only",
+            "gate_ngram_repetition", "gate_low_speech_fraction_only",
+            "gate_low_snr_proxy_only", "gate_audio_text_mismatch",
+            "gate_acoustic", "gate_flagged",
             "plausibility_gpt2_norm", "hallucination_like",
         ]
         all_columns = all_columns + gate_cols
@@ -1122,9 +1251,17 @@ def main():
                     "perturbation": output_suffix or args.noise_ratio,
                     "avg_logprob": avg_logprobs[i],
                     "compression_ratio": compression_ratios[i],
+                    "speech_fraction": audio_signals[i]["speech_fraction"],
+                    "snr_proxy_db": audio_signals[i]["snr_proxy_db"],
                     "gate_avg_logprob_only": gate_flags[i]["avg_logprob_only"],
                     "gate_compression_ratio_only": gate_flags[i]["compression_ratio_only"],
+                    "gate_trigram_repetition_only": gate_flags[i]["trigram_repetition_only"],
                     "gate_fourgram_repetition_only": gate_flags[i]["fourgram_repetition_only"],
+                    "gate_ngram_repetition": gate_flags[i]["ngram_repetition"],
+                    "gate_low_speech_fraction_only": gate_flags[i]["low_speech_fraction_only"],
+                    "gate_low_snr_proxy_only": gate_flags[i]["low_snr_proxy_only"],
+                    "gate_audio_text_mismatch": gate_flags[i]["audio_text_mismatch"],
+                    "gate_acoustic": gate_flags[i]["acoustic_gate"],
                     "gate_flagged": gate_flags[i]["combined_gate"],
                     "plausibility_gpt2_norm": plausibility_scores[i],
                     "hallucination_like": hallucination_like[i],
@@ -1149,6 +1286,7 @@ def main():
     print(f"  Fourgram reps: {mean_fourgram:.2f}")
     if gated_mode:
         print(f"  Gate flagged: {sum(row['combined_gate'] for row in gate_flags)}/{len(gate_flags)}")
+        print(f"  Acoustic gate: {sum(row['acoustic_gate'] for row in gate_flags)}/{len(gate_flags)}")
     print(f"{'=' * 60}")
 
     # Save summary JSON
@@ -1179,6 +1317,8 @@ def main():
             "eval_mode": args.eval_mode,
             "mean_avg_logprob": float(np.mean(avg_logprobs)) if avg_logprobs else 0.0,
             "mean_compression_ratio": float(np.mean(compression_ratios)) if compression_ratios else 0.0,
+            "mean_speech_fraction": float(np.mean([row["speech_fraction"] for row in audio_signals])) if audio_signals else 0.0,
+            "mean_snr_proxy_db": float(np.mean([row["snr_proxy_db"] for row in audio_signals])) if audio_signals else 0.0,
             "gate_thresholds": gate_thresholds,
             "gate_threshold_source": gate_threshold_source,
             "plausibility_source": plausibility_source,

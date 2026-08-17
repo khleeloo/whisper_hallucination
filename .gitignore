@@ -2,3 +2,11 @@ slurm_logs/
 *.log
 *.out
 *.err
+*.jsonl
+*.json
+*.csv
+*.jpg
+*.pdf
+*.png
+plots/
+plots_lm/

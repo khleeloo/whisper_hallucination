@@ -35,36 +35,47 @@ CONDITION_COLORS = {
 FAMILY_MARKERS = {"Whisper 64%": "o", "fairseq 8%": "^"}
 FAMILY_COLORS = {"Whisper 64%": "#7B3294", "fairseq 8%": "#E66101"}
 FAMILY_HATCHES = {"Whisper 64%": "", "fairseq 8%": "///"}
-SCATTER_X_DODGE = {"Whisper 64%": -0.006, "fairseq 8%": 0.006}
-SCATTER_Y_DODGE = {"Whisper 64%": 0.002, "fairseq 8%": -0.002}
+SCATTER_X_DODGE = {"Whisper 64%": -0.004, "fairseq 8%": 0.004}
+SCATTER_Y_DODGE = {"Whisper 64%": 0.0015, "fairseq 8%": -0.0015}
+PATTERN_X_DODGE = {"Whisper 64%": -0.0025, "fairseq 8%": 0.0025}
+PATTERN_Y_DODGE = {"Whisper 64%": 0.0009, "fairseq 8%": -0.0009}
 LABEL_OFFSETS = {
-    ("Whisper 64%", "RR"): (24, 26),
-    ("Whisper 64%", "RU"): (-34, 20),
-    ("Whisper 64%", "UR"): (20, -18),
-    ("Whisper 64%", "UU"): (34, -18),
-    ("fairseq 8%", "RR"): (18, -24),
-    ("fairseq 8%", "RU"): (-34, -26),
-    ("fairseq 8%", "UR"): (-22, 20),
-    ("fairseq 8%", "UU"): (26, 22),
+    ("Whisper 64%", "RR"): (10, 12),
+    ("Whisper 64%", "RU"): (-10, 12),
+    ("Whisper 64%", "UR"): (10, -10),
+    ("Whisper 64%", "UU"): (12, -10),
+    ("fairseq 8%", "RR"): (10, -12),
+    ("fairseq 8%", "RU"): (-10, -12),
+    ("fairseq 8%", "UR"): (-10, 10),
+    ("fairseq 8%", "UU"): (12, 10),
 }
 REPETITION_LABEL_OFFSETS = {
-    ("Whisper 64%", "RR"): (18, 22),
-    ("Whisper 64%", "RU"): (28, 24),
-    ("Whisper 64%", "UR"): (18, -22),
-    ("Whisper 64%", "UU"): (30, -24),
-    ("fairseq 8%", "RR"): (22, -18),
-    ("fairseq 8%", "RU"): (-28, -18),
-    ("fairseq 8%", "UR"): (-34, 22),
-    ("fairseq 8%", "UU"): (26, 22),
+    ("Whisper 64%", "RR"): (10, 12),
+    ("Whisper 64%", "RU"): (12, 10),
+    ("Whisper 64%", "UR"): (10, -12),
+    ("Whisper 64%", "UU"): (12, -10),
+    ("fairseq 8%", "RR"): (10, -10),
+    ("fairseq 8%", "RU"): (-10, -10),
+    ("fairseq 8%", "UR"): (-12, 10),
+    ("fairseq 8%", "UU"): (12, 10),
 }
 CROWDED_LABELS = {
-    "fluency": {
+    "fluency_avg": {
         ("Whisper 64%", "RR"),
         ("Whisper 64%", "RU"),
         ("Whisper 64%", "UU"),
         ("fairseq 8%", "RU"),
     },
     "repetition": {
+        ("Whisper 64%", "RR"),
+        ("Whisper 64%", "RU"),
+        ("Whisper 64%", "UU"),
+    },
+    "repetition_fourgram": {
+        ("Whisper 64%", "RU"),
+        ("Whisper 64%", "UU"),
+    },
+    "repetition_avg": {
         ("Whisper 64%", "RR"),
         ("Whisper 64%", "RU"),
         ("Whisper 64%", "UU"),
@@ -113,14 +124,22 @@ def aggregate_whisper(whisper_files):
             "mean_trigram_rep_count": df["trigram_rep_count"].mean(),
             "mean_fourgram_rep_count": df["fourgram_rep_count"].mean(),
         }
+        fluency_cols = []
+        if "normalized_sentence_score_gpt2" in df.columns:
+            row["fluency_gpt2"] = df["normalized_sentence_score_gpt2"].mean()
+            fluency_cols.append("fluency_gpt2")
         if "normalized_sentence_score_Qwen3-0.6B" in df.columns:
-            row["fluency"] = df["normalized_sentence_score_Qwen3-0.6B"].mean()
-            row["fluency_source"] = "Qwen3-0.6B"
-        elif "normalized_sentence_score_gpt2" in df.columns:
-            row["fluency"] = df["normalized_sentence_score_gpt2"].mean()
-            row["fluency_source"] = "gpt2"
-        else:
+            row["fluency_qwen3_0_6b"] = df["normalized_sentence_score_Qwen3-0.6B"].mean()
+            fluency_cols.append("fluency_qwen3_0_6b")
+        if not fluency_cols:
             raise ValueError(f"No normalized fluency column for {condition}")
+        row["fluency"] = float(np.mean([row[col] for col in fluency_cols]))
+        row["fluency_source"] = "+".join(fluency_cols)
+        row["mean_repetition_count"] = float(np.mean([
+            row["mean_bigram_rep_count"],
+            row["mean_trigram_rep_count"],
+            row["mean_fourgram_rep_count"],
+        ]))
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -134,15 +153,23 @@ def aggregate_fairseq(path):
         if len(cond_df) != 1:
             raise ValueError(f"Expected one fairseq row for {condition}, found {len(cond_df)}")
         source = cond_df.iloc[0]
+        fluency_values = []
+        fluency_source = []
+        if "mean_normalized_score_gpt2" in source.index:
+            fluency_values.append(source["mean_normalized_score_gpt2"])
+            fluency_source.append("gpt2")
         if "mean_normalized_score_Qwen3-0.6B" in source.index:
-            fluency = source["mean_normalized_score_Qwen3-0.6B"]
-            fluency_source = "Qwen3-0.6B"
-        elif "mean_normalized_score_gpt2" in source.index:
-            fluency = source["mean_normalized_score_gpt2"]
-            fluency_source = "gpt2"
-        else:
-            fluency = source["primary_fluency_mean"]
-            fluency_source = "fairseq scaled probability"
+            fluency_values.append(source["mean_normalized_score_Qwen3-0.6B"])
+            fluency_source.append("Qwen3-0.6B")
+        if not fluency_values:
+            fluency_values.append(source["primary_fluency_mean"])
+            fluency_source.append("fairseq scaled probability")
+        fluency = float(np.mean(fluency_values))
+        mean_repetition_count = float(np.mean([
+            source["mean_bigram_rep_count"],
+            source["mean_trigram_rep_count"],
+            source["mean_fourgram_rep_count"],
+        ]))
         rows.append({
             "family": "fairseq 8%",
             "condition": condition,
@@ -155,8 +182,11 @@ def aggregate_fairseq(path):
             "mean_bigram_rep_count": source["mean_bigram_rep_count"],
             "mean_trigram_rep_count": source["mean_trigram_rep_count"],
             "mean_fourgram_rep_count": source["mean_fourgram_rep_count"],
+            "mean_repetition_count": mean_repetition_count,
             "fluency": fluency,
-            "fluency_source": fluency_source,
+            "fluency_source": "+".join(fluency_source),
+            "fluency_gpt2": source.get("mean_normalized_score_gpt2", np.nan),
+            "fluency_qwen3_0_6b": source.get("mean_normalized_score_Qwen3-0.6B", np.nan),
         })
     return pd.DataFrame(rows)
 
@@ -167,6 +197,10 @@ def add_baseline_deltas(plot_df):
     plot_df["delta_wacc"] = np.nan
     plot_df["delta_fluency"] = np.nan
     plot_df["delta_trigram_rep_count"] = np.nan
+    plot_df["delta_fourgram_rep_count"] = np.nan
+    plot_df["delta_mean_repetition_count"] = np.nan
+    plot_df["relative_wer"] = np.nan
+    plot_df["relative_fluency"] = np.nan
     for family in plot_df["family"].unique():
         family_mask = plot_df["family"] == family
         base_row = plot_df[family_mask & (plot_df["condition"].astype(str) == "base")]
@@ -176,20 +210,257 @@ def add_baseline_deltas(plot_df):
         base_wer = base_row.iloc[0]["mean_wer"]
         base_fluency = base_row.iloc[0]["fluency"]
         base_trigram_rep = base_row.iloc[0]["mean_trigram_rep_count"]
+        base_fourgram_rep = base_row.iloc[0]["mean_fourgram_rep_count"]
+        base_mean_rep = base_row.iloc[0]["mean_repetition_count"]
         plot_df.loc[family_mask, "delta_wer"] = plot_df.loc[family_mask, "mean_wer"] - base_wer
         plot_df.loc[family_mask, "delta_wacc"] = plot_df.loc[family_mask, "mean_wacc"] - base_wacc
         plot_df.loc[family_mask, "delta_fluency"] = plot_df.loc[family_mask, "fluency"] - base_fluency
+        plot_df.loc[family_mask, "relative_wer"] = plot_df.loc[family_mask, "mean_wer"] / base_wer
+        plot_df.loc[family_mask, "relative_fluency"] = plot_df.loc[family_mask, "fluency"] / base_fluency
         plot_df.loc[family_mask, "delta_trigram_rep_count"] = (
             plot_df.loc[family_mask, "mean_trigram_rep_count"] - base_trigram_rep
+        )
+        plot_df.loc[family_mask, "delta_fourgram_rep_count"] = (
+            plot_df.loc[family_mask, "mean_fourgram_rep_count"] - base_fourgram_rep
+        )
+        plot_df.loc[family_mask, "delta_mean_repetition_count"] = (
+            plot_df.loc[family_mask, "mean_repetition_count"] - base_mean_rep
         )
     return plot_df
 
 
+def annotate_condition(ax, row, x_value, y_value, crowded_labels, offset_map=None):
+    if str(row["condition"]) == "base":
+        return
+    label = f"{'Whisper' if row['family'] == 'Whisper 64%' else 'fairseq'} {row['condition_label']}"
+    label_key = (row["family"], str(row["condition"]))
+    if offset_map and label_key in offset_map:
+        x_offset, y_offset = offset_map[label_key]
+    else:
+        x_offset, y_offset = (5, 5)
+    arrowprops = None
+    if label_key in crowded_labels:
+        arrowprops = {
+            "arrowstyle": "-",
+            "color": "#555555",
+            "lw": 0.55,
+            "shrinkA": 2,
+            "shrinkB": 4,
+            "alpha": 0.8,
+        }
+    ax.annotate(
+        label,
+        (x_value, y_value),
+        xytext=(x_offset, y_offset),
+        textcoords="offset points",
+        fontsize=8.0,
+        ha="left" if x_offset >= 0 else "right",
+        va="center",
+        clip_on=False,
+        bbox={"boxstyle": "round,pad=0.12", "facecolor": "white", "edgecolor": "none", "alpha": 0.7},
+        arrowprops=arrowprops,
+    )
+
+
+def make_pattern_figure(plot_df, output_dir):
+    families = ["Whisper 64%", "fairseq 8%"]
+    plt.rcParams.update({
+        "font.family": "DejaVu Sans",
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+    })
+
+    fig, axes = plt.subplots(1, 2, figsize=(14.2, 5.2))
+    fig.patch.set_facecolor("white")
+    fig.patch.set_alpha(1.0)
+    ax_rep, ax_hall = axes
+    for ax in axes:
+        ax.set_facecolor("white")
+        ax.tick_params(axis="both", labelsize=10)
+
+    rep_offsets = {
+        ("Whisper 64%", "RR"): (5, 7),
+        ("Whisper 64%", "RU"): (5, 5),
+        ("Whisper 64%", "UR"): (5, -7),
+        ("Whisper 64%", "UU"): (5, -5),
+        ("fairseq 8%", "RR"): (5, 6),
+        ("fairseq 8%", "RU"): (-5, -5),
+        ("fairseq 8%", "UR"): (5, 5),
+        ("fairseq 8%", "UU"): (-5, -5),
+    }
+    hall_offsets = {
+        ("Whisper 64%", "RR"): (5, -6),
+        ("Whisper 64%", "RU"): (5, 5),
+        ("Whisper 64%", "UR"): (-8, -12),
+        ("Whisper 64%", "UU"): (-5, -6),
+        ("fairseq 8%", "RR"): (5, -6),
+        ("fairseq 8%", "RU"): (-5, -5),
+        ("fairseq 8%", "UR"): (-8, 16),
+        ("fairseq 8%", "UU"): (-5, -6),
+    }
+    rep_crowded = {
+        ("Whisper 64%", "RU"),
+        ("Whisper 64%", "UU"),
+        ("fairseq 8%", "RU"),
+        ("fairseq 8%", "UR"),
+    }
+    hall_crowded = {
+        ("Whisper 64%", "RR"),
+        ("Whisper 64%", "RU"),
+        ("Whisper 64%", "UR"),
+        ("Whisper 64%", "UU"),
+        ("fairseq 8%", "RU"),
+        ("fairseq 8%", "UR"),
+        ("fairseq 8%", "UU"),
+    }
+
+    for _, row in plot_df.iterrows():
+        x_dodge = PATTERN_X_DODGE[row["family"]]
+        y_dodge = PATTERN_Y_DODGE[row["family"]]
+
+        rep_x = row["delta_wer"] + x_dodge
+        rep_y = row["delta_fourgram_rep_count"] + y_dodge
+        ax_rep.scatter(
+            rep_x,
+            rep_y,
+            s=135,
+            marker=FAMILY_MARKERS[row["family"]],
+            color=CONDITION_COLORS[row["condition"]],
+            edgecolor="black",
+            linewidth=0.65,
+            alpha=0.92,
+        )
+        annotate_condition(ax_rep, row, rep_x, rep_y, rep_crowded, rep_offsets)
+
+        hall_x = row["mean_wer"] + x_dodge
+        hall_y = row["fluency"] + y_dodge
+        ax_hall.scatter(
+            hall_x,
+            hall_y,
+            s=135,
+            marker=FAMILY_MARKERS[row["family"]],
+            color=CONDITION_COLORS[row["condition"]],
+            edgecolor="black",
+            linewidth=0.65,
+            alpha=0.92,
+        )
+        annotate_condition(ax_hall, row, hall_x, hall_y, hall_crowded, hall_offsets)
+
+    ax_rep.axhspan(0.020, 0.075, color="#E8D8F0", alpha=0.45, zorder=0)
+    ax_rep.text(
+        0.255,
+        0.066,
+        "high repetition",
+        fontsize=9,
+        color="#5E3C67",
+        ha="right",
+        va="center",
+    )
+    ax_rep.axhline(0, color="#777777", linewidth=0.9, linestyle="--", zorder=0)
+    ax_rep.axvline(0, color="#777777", linewidth=0.9, linestyle="--", zorder=0)
+    ax_rep.set_title("A. Repetition Pattern", fontsize=14, fontweight="bold")
+    ax_rep.set_xlabel("ΔWER vs own base", fontsize=12)
+    ax_rep.set_ylabel("Δ4-gram repetitions / own base", fontsize=12)
+    ax_rep.set_xlim(-0.02, 0.32)
+    ax_rep.set_ylim(-0.16, 0.075)
+    ax_rep.grid(True, alpha=0.2, linewidth=0.8)
+
+    ax_hall.axhspan(0.75, 1.0, color="#F6E3C3", alpha=0.55, zorder=0)
+    ax_hall.axvspan(0.32, 0.46, color="#DCE7F2", alpha=0.14, zorder=0)
+    ax_hall.axvspan(
+        0.32,
+        0.46,
+        facecolor="none",
+        edgecolor="#A9B8C8",
+        hatch="//",
+        linewidth=0.0,
+        zorder=0,
+    )
+    ax_hall.text(
+        0.300,
+        0.965,
+        "fluent plausible sentences",
+        fontsize=9,
+        color="#8A5A00",
+        ha="right",
+        va="center",
+    )
+    ax_hall.text(
+        0.445,
+        0.115,
+        "transcription failure",
+        fontsize=9,
+        color="#48596D",
+        ha="right",
+        va="center",
+    )
+    ax_hall.axhline(0.75, color="#777777", linewidth=0.9, linestyle="--", zorder=0)
+    ax_hall.set_title("B. Hallucination-like Pattern", fontsize=14, fontweight="bold")
+    ax_hall.set_xlabel("WER", fontsize=12)
+    ax_hall.set_ylabel("Fluency", fontsize=12)
+    ax_hall.set_xlim(0.0, 0.46)
+    ax_hall.set_ylim(0.0, 1.0)
+    ax_hall.grid(True, alpha=0.2, linewidth=0.8)
+
+    model_handles = [
+        Line2D([0], [0], marker=FAMILY_MARKERS[family], color="none", markerfacecolor="white",
+               markeredgecolor="black", markersize=9, linestyle="None", label=family)
+        for family in families
+    ]
+    condition_handles = [
+        Line2D([0], [0], marker="o", color="none", markerfacecolor=CONDITION_COLORS[condition],
+               markeredgecolor="black", markersize=9, linestyle="None", label=CONDITION_LABELS[condition])
+        for condition in CONDITIONS
+    ]
+    fig.legend(
+        handles=model_handles,
+        title="Model",
+        frameon=False,
+        fontsize=9.5,
+        title_fontsize=10,
+        loc="upper right",
+        bbox_to_anchor=(0.970, 0.86),
+        ncol=1,
+        borderaxespad=0.0,
+    )
+    fig.legend(
+        handles=condition_handles,
+        title="Condition",
+        frameon=False,
+        fontsize=9.5,
+        title_fontsize=10,
+        loc="upper right",
+        bbox_to_anchor=(0.970, 0.60),
+        ncol=1,
+        borderaxespad=0.0,
+    )
+
+    fig.suptitle("Repetition and Hallucination-like Failure Patterns", fontsize=15, fontweight="bold")
+    fig.tight_layout(rect=[0, 0, 0.915, 0.95])
+
+    output_stem = "whisper_fairseq_repetition_hallucination_patterns"
+    png_path = os.path.join(output_dir, f"{output_stem}.png")
+    pdf_path = os.path.join(output_dir, f"{output_stem}.pdf")
+    jpg_path = os.path.join(output_dir, f"{output_stem}.jpg")
+    buffer = io.BytesIO()
+    fig.savefig(buffer, format="png", dpi=200, bbox_inches="tight", facecolor="white", transparent=False)
+    buffer.seek(0)
+    rendered = Image.open(buffer).convert("RGBA")
+    white = Image.new("RGBA", rendered.size, "white")
+    white.alpha_composite(rendered)
+    flattened = white.convert("RGB")
+    flattened.save(png_path)
+    flattened.save(jpg_path, quality=95)
+    fig.savefig(pdf_path, dpi=300, bbox_inches="tight", facecolor="white", transparent=False)
+    plt.close(fig)
+    return png_path, pdf_path, jpg_path
+
+
 def get_y_config(y_metric):
-    if y_metric == "fluency":
+    if y_metric == "fluency_avg":
         return {
             "column": "delta_fluency",
-            "ylabel": "ΔFluency vs own base",
+            "ylabel": "ΔMean fluency (GPT-2 + Qwen3-0.6B) vs own base",
             "ylim": (-0.065, 0.03),
             "vertical_label": "lower fluency",
             "vertical_xy": (0.315, -0.043),
@@ -205,6 +476,26 @@ def get_y_config(y_metric):
             "vertical_xy": (0.315, 0.095),
             "vertical_text": (0.315, 0.020),
             "suffix": "_repetition",
+        }
+    if y_metric == "repetition_fourgram":
+        return {
+            "column": "delta_fourgram_rep_count",
+            "ylabel": "Δ4-gram repetition count vs own base",
+            "ylim": (-0.18, 0.12),
+            "vertical_label": "more 4-gram repetition",
+            "vertical_xy": (0.315, 0.095),
+            "vertical_text": (0.315, 0.020),
+            "suffix": "_fourgram_repetition",
+        }
+    if y_metric == "repetition_avg":
+        return {
+            "column": "delta_mean_repetition_count",
+            "ylabel": "ΔMean 2/3/4-gram repetition count vs own base",
+            "ylim": (-0.18, 0.12),
+            "vertical_label": "more repetition",
+            "vertical_xy": (0.315, 0.095),
+            "vertical_text": (0.315, 0.020),
+            "suffix": "_avg_repetition",
         }
     raise ValueError(f"Unsupported y_metric: {y_metric}")
 
@@ -275,11 +566,11 @@ def make_figure(plot_df, output_dir, y_metric="fluency"):
         )
         if str(row["condition"]) != "base":
             label = f"{'Whisper' if row['family'] == 'Whisper 64%' else 'fairseq'} {row['condition_label']}"
-            label_offsets = REPETITION_LABEL_OFFSETS if y_metric == "repetition" else LABEL_OFFSETS
+            label_offsets = REPETITION_LABEL_OFFSETS if y_metric.startswith("repetition") else LABEL_OFFSETS
             label_key = (row["family"], str(row["condition"]))
             label_x_offset, label_y_offset = label_offsets[label_key]
             arrowprops = None
-            if label_key in CROWDED_LABELS[y_metric]:
+            if label_key in CROWDED_LABELS.get(y_metric, set()):
                 arrowprops = {
                     "arrowstyle": "-",
                     "color": "#555555",
@@ -407,8 +698,11 @@ def main():
     plot_df.to_csv(csv_path, index=False)
     repetition_csv_path = os.path.join(args.output_dir, "whisper_fairseq_two_panel_repetition_data.csv")
     plot_df.to_csv(repetition_csv_path, index=False)
-    png_path, pdf_path, jpg_path = make_figure(plot_df, args.output_dir, y_metric="fluency")
+    png_path, pdf_path, jpg_path = make_figure(plot_df, args.output_dir, y_metric="fluency_avg")
     rep_png_path, rep_pdf_path, rep_jpg_path = make_figure(plot_df, args.output_dir, y_metric="repetition")
+    four_png_path, four_pdf_path, four_jpg_path = make_figure(plot_df, args.output_dir, y_metric="repetition_fourgram")
+    avg_rep_png_path, avg_rep_pdf_path, avg_rep_jpg_path = make_figure(plot_df, args.output_dir, y_metric="repetition_avg")
+    pattern_png_path, pattern_pdf_path, pattern_jpg_path = make_pattern_figure(plot_df, args.output_dir)
 
     print(f"Saved data: {csv_path}", flush=True)
     print(f"Saved data: {repetition_csv_path}", flush=True)
@@ -418,6 +712,15 @@ def main():
     print(f"Saved figure: {rep_png_path}", flush=True)
     print(f"Saved figure: {rep_pdf_path}", flush=True)
     print(f"Saved figure: {rep_jpg_path}", flush=True)
+    print(f"Saved figure: {four_png_path}", flush=True)
+    print(f"Saved figure: {four_pdf_path}", flush=True)
+    print(f"Saved figure: {four_jpg_path}", flush=True)
+    print(f"Saved figure: {avg_rep_png_path}", flush=True)
+    print(f"Saved figure: {avg_rep_pdf_path}", flush=True)
+    print(f"Saved figure: {avg_rep_jpg_path}", flush=True)
+    print(f"Saved figure: {pattern_png_path}", flush=True)
+    print(f"Saved figure: {pattern_pdf_path}", flush=True)
+    print(f"Saved figure: {pattern_jpg_path}", flush=True)
 
 
 if __name__ == "__main__":

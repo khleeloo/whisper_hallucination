@@ -435,14 +435,14 @@ def compute_hallucination_rates(per_df, agg_df, primary_col):
         print("  WARNING: no base condition found; using global thresholds.", flush=True)
         base_df = per_df
 
-    wacc_threshold = base_df["wacc"].mean()
+    wer_threshold = base_df["wer"].mean()
     fluency_threshold = base_df[primary_col].mean()
-    wacc_q25 = base_df["wacc"].quantile(0.25)
+    wer_q75 = base_df["wer"].quantile(0.75)
     fluency_median = base_df[primary_col].median()
 
-    print(f"  WAcc threshold (mean base): {wacc_threshold:.4f}", flush=True)
+    print(f"  WER threshold (mean base): {wer_threshold:.4f}", flush=True)
     print(f"  Fluency threshold (mean base): {fluency_threshold:.4f}", flush=True)
-    print(f"  WAcc Q25 (strict): {wacc_q25:.4f}", flush=True)
+    print(f"  WER Q75 (strict): {wer_q75:.4f}", flush=True)
     print(f"  Fluency median (strict): {fluency_median:.4f}", flush=True)
 
     per_df["hallucination_like"] = False
@@ -451,8 +451,8 @@ def compute_hallucination_rates(per_df, agg_df, primary_col):
     for model_name in sorted(per_df["model_name"].unique()):
         cond_mask = per_df["model_name"] == model_name
         cond_df = per_df[cond_mask]
-        hall_standard = (cond_df["wacc"] < wacc_threshold) & (cond_df[primary_col] > fluency_threshold)
-        hall_strict = (cond_df["wacc"] <= wacc_q25) & (cond_df[primary_col] >= fluency_median)
+        hall_standard = (cond_df["wer"] > wer_threshold) & (cond_df[primary_col] > fluency_threshold)
+        hall_strict = (cond_df["wer"] >= wer_q75) & (cond_df[primary_col] >= fluency_median)
         per_df.loc[cond_mask, "hallucination_like"] = hall_standard.values
         per_df.loc[cond_mask, "hallucination_like_strict"] = hall_strict.values
 
@@ -462,13 +462,13 @@ def compute_hallucination_rates(per_df, agg_df, primary_col):
         if model_name in rates.index:
             agg_df.at[row_idx, "hallucination_like_rate"] = rates.loc[model_name, "hallucination_like"]
             agg_df.at[row_idx, "hallucination_like_rate_strict"] = rates.loc[model_name, "hallucination_like_strict"]
-        agg_df.at[row_idx, "wacc_threshold"] = wacc_threshold
+        agg_df.at[row_idx, "wer_threshold"] = wer_threshold
         agg_df.at[row_idx, "fluency_threshold"] = fluency_threshold
 
     return per_df, agg_df, {
-        "wacc_threshold_mean_base": float(wacc_threshold),
+        "wer_threshold_mean_base": float(wer_threshold),
         "fluency_threshold_mean_base": float(fluency_threshold),
-        "wacc_q25_strict": float(wacc_q25),
+        "wer_q75_strict": float(wer_q75),
         "fluency_median_strict": float(fluency_median),
     }
 

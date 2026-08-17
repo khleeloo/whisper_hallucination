@@ -87,24 +87,24 @@ Computed separately for weak and strong LMs. This is the main fluency metric.
 
 ### Metric 6: Hallucination-Like Rate
 
-Operational definition: low WAcc + high normalized sentence score.
+Operational definition: high WER + high normalized sentence score.
 
 **Thresholds** (derived from Whisper baseline distribution):
 
 ```python
-wacc_threshold = mean(WAcc of Whisper-Base)
+wer_threshold = mean(WER of Whisper-Base)
 fluency_threshold = mean(normalized_sentence_score of Whisper-Base)
 
-hallucination_like = wacc < wacc_threshold AND norm_score > fluency_threshold
+hallucination_like = wer > wer_threshold AND norm_score > fluency_threshold
 ```
 
 **Strict variant**:
 
 ```python
-wacc_q25 = Q25(WAcc of Whisper-Base)
+wer_q75 = Q75(WER of Whisper-Base)
 fluency_median = median(normalized_sentence_score of Whisper-Base)
 
-hallucination_like_strict = wacc <= wacc_q25 AND norm_score >= fluency_median
+hallucination_like_strict = wer >= wer_q75 AND norm_score >= fluency_median
 ```
 
 Expected: UR should have the largest hallucination-like rate increase.

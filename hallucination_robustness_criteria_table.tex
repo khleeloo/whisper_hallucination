@@ -1,0 +1,22 @@
+\begin{table}[t]
+\centering
+\caption{Robustness of hallucination-like ranking under alternative criteria. Values are percentages of all utterances; samples with trigram or four-gram repetition are excluded from the hallucination-like numerator.}
+\label{tab:hallucination_robustness}
+\small
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{lrrrrr}
+\toprule
+\textbf{Criterion} & \textbf{Base} & \textbf{RR} & \textbf{RU} & \textbf{UR} & \textbf{UU} \\
+\midrule
+Mean WER / mean Qwen3 & 17.00 & 16.50 & 16.88 & 15.95 & 16.91 \\
+Top-25% WER / top-25% Qwen3 & 10.36 & 10.15 & 10.25 & 10.49 & 10.56 \\
+WER > 0.5, Qwen3 > 0.6 & 1.97 & 1.98 & 2.18 & 5.03 & 2.09 \\
+WER > 0.5, Qwen3 > 0.7 & 1.83 & 1.81 & 2.02 & 4.67 & 1.95 \\
+\bottomrule
+\end{tabular}
+\vspace{0.5em}
+\begin{minipage}{0.95\linewidth}
+\footnotesize
+\textit{Notes.} Hallucination-like outputs are treated as an operational diagnostic category: fluent or language-model-plausible hypotheses with low reference grounding. Repetition/oscillation is analyzed separately by excluding samples with elevated trigram or four-gram repetition from the hallucination-like numerator.
+\end{minipage}
+\end{table}

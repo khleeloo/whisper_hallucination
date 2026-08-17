@@ -146,26 +146,43 @@ def test_gate_threshold_json_and_gzip_round_trip(tmp_path):
     MODULE.save_gate_thresholds(thresholds, str(json_path))
     MODULE.save_gate_thresholds(thresholds, str(gzip_path))
 
-    assert json.loads(json_path.read_text(encoding="utf-8")) == thresholds
-    assert MODULE.load_gate_thresholds(str(json_path)) == thresholds
-    assert MODULE.load_gate_thresholds(str(gzip_path)) == thresholds
+    saved = json.loads(json_path.read_text(encoding="utf-8"))
+    assert saved["T_logprob"] == thresholds["T_logprob"]
+    assert saved["T_compression"] == thresholds["T_compression"]
+    assert saved["T_speech_fraction"] == MODULE.DEFAULT_GATE_THRESHOLDS["T_speech_fraction"]
+    assert MODULE.load_gate_thresholds(str(json_path)) == saved
+    assert MODULE.load_gate_thresholds(str(gzip_path)) == saved
 
 
 def test_apply_gate_signals_uses_or_for_combined_gate():
     thresholds = {"T_logprob": -5.0, "T_compression": 2.0}
 
-    assert MODULE.apply_gate_signals(-6.0, 1.0, 0, thresholds)["combined_gate"] is True
-    assert MODULE.apply_gate_signals(-4.0, 2.5, 0, thresholds)["combined_gate"] is True
-    assert MODULE.apply_gate_signals(-4.0, 1.0, 1, thresholds)["combined_gate"] is True
-    assert MODULE.apply_gate_signals(-4.0, 1.0, 0, thresholds)["combined_gate"] is False
+    assert MODULE.apply_gate_signals(-6.0, 1.0, 0, 0, 0.5, 20.0, 0, thresholds)["combined_gate"] is True
+    assert MODULE.apply_gate_signals(-4.0, 2.5, 0, 0, 0.5, 20.0, 0, thresholds)["combined_gate"] is True
+    trigram_flags = MODULE.apply_gate_signals(-4.0, 1.0, 1, 0, 0.5, 20.0, 0, thresholds)
+    fourgram_flags = MODULE.apply_gate_signals(-4.0, 1.0, 0, 1, 0.5, 20.0, 0, thresholds)
+    acoustic_flags = MODULE.apply_gate_signals(-4.0, 1.0, 0, 0, 0.5, 2.0, 8, thresholds)
+    clean_flags = MODULE.apply_gate_signals(-4.0, 1.0, 0, 0, 0.5, 20.0, 0, thresholds)
+
+    assert trigram_flags["trigram_repetition_only"] is True
+    assert trigram_flags["ngram_repetition"] is True
+    assert trigram_flags["combined_gate"] is True
+    assert fourgram_flags["fourgram_repetition_only"] is True
+    assert fourgram_flags["ngram_repetition"] is True
+    assert fourgram_flags["combined_gate"] is True
+    assert acoustic_flags["low_snr_proxy_only"] is True
+    assert acoustic_flags["audio_text_mismatch"] is True
+    assert acoustic_flags["acoustic_gate"] is True
+    assert acoustic_flags["combined_gate"] is True
+    assert clean_flags["combined_gate"] is False
 
 
 def test_summarize_gate_ablation_reports_before_after_metrics():
     flags = [
-        {"avg_logprob_only": True, "compression_ratio_only": False, "fourgram_repetition_only": False, "combined_gate": True},
-        {"avg_logprob_only": False, "compression_ratio_only": False, "fourgram_repetition_only": False, "combined_gate": False},
-        {"avg_logprob_only": False, "compression_ratio_only": True, "fourgram_repetition_only": False, "combined_gate": True},
-        {"avg_logprob_only": False, "compression_ratio_only": False, "fourgram_repetition_only": False, "combined_gate": False},
+        {"avg_logprob_only": True, "compression_ratio_only": False, "trigram_repetition_only": False, "fourgram_repetition_only": False, "ngram_repetition": False, "low_speech_fraction_only": False, "low_snr_proxy_only": False, "audio_text_mismatch": False, "acoustic_gate": False, "combined_gate": True},
+        {"avg_logprob_only": False, "compression_ratio_only": False, "trigram_repetition_only": False, "fourgram_repetition_only": False, "ngram_repetition": False, "low_speech_fraction_only": False, "low_snr_proxy_only": False, "audio_text_mismatch": False, "acoustic_gate": False, "combined_gate": False},
+        {"avg_logprob_only": False, "compression_ratio_only": True, "trigram_repetition_only": False, "fourgram_repetition_only": False, "ngram_repetition": False, "low_speech_fraction_only": False, "low_snr_proxy_only": False, "audio_text_mismatch": False, "acoustic_gate": False, "combined_gate": True},
+        {"avg_logprob_only": False, "compression_ratio_only": False, "trigram_repetition_only": False, "fourgram_repetition_only": False, "ngram_repetition": False, "low_speech_fraction_only": False, "low_snr_proxy_only": False, "audio_text_mismatch": False, "acoustic_gate": False, "combined_gate": False},
     ]
     summary = MODULE.summarize_gate_ablation(
         flags,

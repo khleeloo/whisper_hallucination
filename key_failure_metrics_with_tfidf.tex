@@ -1,0 +1,33 @@
+\begin{table*}[t]
+\centering
+\caption{Key failure-mode metrics for the conditions shown in Fig.~\ref{fig:failure_modes}. WER and $\Delta$WER are reported in percentage points. Repetition values are mean normalized trigram and four-gram repetition rates.}
+\label{tab:key_failure_metrics}
+\small
+\setlength{\tabcolsep}{4.2pt}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{llrrrrrr}
+\toprule
+\textbf{Model} & \textbf{Condition} & \textbf{WER} & \textbf{$\Delta$WER} & \textbf{LM plaus.} & \textbf{Halluc. rate} & \textbf{Tri-rep.} & \textbf{Four-rep.} \\
+\midrule
+\multirow{5}{*}{Whisper 64\%}
+& Base & 13.14 & 0.00 & 0.871 & 17.07 & 0.0163 & 0.0142 \\
+& RR   & 13.84 & +0.70 & 0.859 & 16.63 & 0.0434 & 0.0403 \\
+& RU   & 13.60 & +0.46 & 0.861 & 16.97 & 0.0063 & 0.0038 \\
+& UR   & 41.93 & +28.79 & 0.798 & 20.24 & 0.1192 & 0.0029 \\
+& UU   & 13.78 & +0.64 & 0.859 & 17.02 & 0.0060 & 0.0035 \\
+\midrule
+\multirow{5}{*}{fairseq 8\%}
+& Base & 12.02 & 0.00 & 0.770 & 9.72 & 0.0103 & 0.0070 \\
+& RR   & 17.74 & +5.72 & 0.712 & 10.65 & 0.0315 & 0.0253 \\
+& RU   & 13.32 & +1.30 & 0.739 & 9.82 & 0.0077 & 0.0041 \\
+& UR   & 33.38 & +21.36 & 0.762 & 12.62 & 0.0046 & 0.0018 \\
+& UU   & 15.04 & +3.02 & 0.722 & 10.76 & 0.0066 & 0.0031 \\
+\bottomrule
+\end{tabular}
+}
+\vspace{0.5em}
+\begin{minipage}{0.97\textwidth}
+\footnotesize
+\textit{Notes.} $\Delta$WER is computed relative to the corresponding clean baseline within each model family. For Whisper, LM plausibility is GPT-2 normalized plausibility. For fairseq, LM plausibility uses the corresponding external fluency score. Hallucination-like rates are reported as percentages and are computed using the baseline-threshold criterion: low WAcc relative to the clean baseline and high normalized fluency relative to the clean baseline. For Whisper, hallucination-like rate uses Qwen3-0.6B normalized fluency, matching the primary LM used for the LM-rescored fairseq hallucination-like metric. Repetition/oscillation is reported separately using trigram and four-gram repetition rates.
+\end{minipage}
+\end{table*}

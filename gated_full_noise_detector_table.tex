@@ -1,0 +1,26 @@
+\begin{table}[t]
+\centering
+\caption{Decoder-only gate behavior under full-noise stress. Values average the completed full-noise runs at amplitudes 0.5 and 0.75. Gate precision and recall are computed against the per-utterance hallucination-like indicator.}
+\label{tab:gated_full_noise_detector}
+\small
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Condition} & \textbf{Hall. ratio} & \textbf{Outputs flagged} & \textbf{Precision} & \textbf{Recall} \\
+\midrule
+Base & 21.0 & 16.0 & 39.6 & 31.0 \\
+RR   & 6.0  & 11.3 & 43.2 & 81.6 \\
+UU   & 23.8 & 22.4 & 41.7 & 38.7 \\
+UR   & 14.7 & 7.9  & 3.9  & 2.1 \\
+\bottomrule
+\end{tabular}
+\vspace{0.5em}
+\begin{minipage}{0.95\linewidth}
+\footnotesize
+\textit{Notes.} All values are percentages over 1000 utterances per run. ``Outputs flagged'' is the share of all model outputs marked by the gate, not the share of hallucination-like outputs caught; the latter is reported as recall. The gate is a detector rather than an intervention: it flags outputs using decoder log probability, compression ratio, and four-gram repetition after transcription. It detects RR-style repetitive hallucination-like outputs with high recall and identifies a meaningful subset of UU failures, but largely misses UR-style transcription failures.
+\end{minipage}
+\end{table}
+
+To test whether a lightweight decoding-time signal could identify hallucination-like failures under severe acoustic corruption, we reran the full-noise stress condition with a decoder-only gate. The gate was applied after transcription and used three hypothesis-internal cues: low average token log probability, high compression ratio, and the presence of four-gram repetition. We evaluated each model on 1000 utterances at two full-noise amplitudes (0.5 and 0.75), then compared the gate flags against the per-utterance hallucination-like labels used in the stress-test analysis.
+
+The decoder-only gate behaves as a selective failure detector rather than a general mitigation mechanism. Its strongest signal appears for RR, where recall exceeds 80\%, and it also identifies a substantial subset of UU failures, consistent with the repetition-heavy nature of these outputs. In contrast, UR remains poorly captured: despite elevated WER, its errors are primarily transcription failures and lexical mismatches with little four-gram repetition, so the current gate does not reliably flag them.
