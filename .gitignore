@@ -10,3 +10,5 @@ slurm_logs/
 *.png
 plots/
 plots_lm/
+__pycache__/
+*.pyc
