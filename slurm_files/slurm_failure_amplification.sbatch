@@ -3,6 +3,7 @@
 #SBATCH --partition=preempt
 #SBATCH --account=vemotionsys
 #SBATCH --nodes=1
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=02:00:00
