@@ -65,7 +65,7 @@ def parse_perturbed_filename(path: Path) -> Tuple[str, str]:
     if stem.startswith("details_"):
         stem = stem[len("details_"):]
     low = stem.lower()
-    m = re.search(r"(?:^|_)(base|clean|rr(?:_64pct)?|ru(?:_64pct)?|ur(?:_64pct)?|uu(?:_64pct)?)_(full_noise|onset_noise|reverb|silence|leading_silence|speech_band_noise)(.*)$", low)
+    m = re.search(r"(?:^|_)(base|clean|rr(?:_64pct)?|ru(?:_64pct)?|ur(?:_64pct)?|uu(?:_64pct)?)_(none|full_noise|onset_noise|reverb|silence|leading_silence|speech_band_noise)(.*)$", low)
     if not m:
         raise ValueError(f"Cannot parse condition/perturbation from {path.name}")
     condition = canonical_condition(m.group(1))
