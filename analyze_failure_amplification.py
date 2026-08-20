@@ -37,11 +37,13 @@ METRIC_CANDIDATES = {
     "Rep3": ["trigram_rep_count", "3gram_reps", "rep3", "Rep3"],
     "Rep4": ["fourgram_rep_count", "4gram_reps", "rep4", "Rep4"],
     "GroundingGap": ["grounding_gap", "GroundingGap", "grounding"],
-    "QwenPlausibility": [
+    # Existing stress jobs use --lm_models gpt2, so norm_plausibility is GPT-2.
+    "PlausibilityGPT2": ["normalized_sentence_score_gpt2", "norm_plausibility"],
+    # Only accept explicitly named Qwen columns as Qwen plausibility.
+    "PlausibilityQwen": [
         "normalized_sentence_score_Qwen3-0.6B",
         "qwen_plausibility",
         "Qwen3",
-        "norm_plausibility",
     ],
 }
 
@@ -84,6 +86,10 @@ def find_metric_columns(df: pd.DataFrame) -> Dict[str, str]:
             if col in df.columns:
                 found[metric] = col
                 break
+    # Historical stress TSVs carrying hallucination_wacc_threshold used the old
+    # WAcc-based hallucination label. Never reuse that label in the current analysis.
+    if "hallucination_wacc_threshold" in df.columns:
+        found.pop("Hallucination", None)
     return found
 
 
@@ -101,7 +107,6 @@ def infer_utterance_ids(df: pd.DataFrame, source_file: str) -> pd.Series | None:
     ordered = [c for c in preferred if c in df.columns] + [c for c in df.columns if c not in preferred]
     for col in ordered:
         sample = df[col].astype(str)
-        # Avoid pandas regex-group warnings by using a non-capturing regex string.
         rate = sample.str.contains(r"(?:common_voice_en_\d+)", regex=True, na=False).mean()
         if rate >= 0.95:
             ids = sample.map(extract_cv_id)
@@ -161,7 +166,6 @@ def frame_from_df(
                 f"Legacy stress file {source_file} has {len(df)} rows but reconstructed test manifest "
                 f"has {len(fallback_manifest)} rows. Check --stress_max_samples and test.tsv provenance."
             )
-        # Legacy stress files were written in the exact order returned by load_test_data.
         ids = fallback_manifest["utterance_id"].reset_index(drop=True)
         stress_ref = df["reference"].map(normalize_text).reset_index(drop=True)
         manifest_ref = fallback_manifest["reference_manifest"].map(normalize_text).reset_index(drop=True)
