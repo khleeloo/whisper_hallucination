@@ -51,6 +51,8 @@ run_eval() {
 
     rm -f "${results_path}" "${details_path}"
 
+    echo "=== UR stress eval ==="
+    echo "LMs: GPT2 + Qwen3-0.6B"
     python "${EVAL_PY}" \
         --model_dir "${MODEL_DIR}" \
         --base_model openai/whisper-large-v3 \
@@ -60,7 +62,7 @@ run_eval() {
         --config_name "${CONFIG}" \
         --max_samples "${MAX_SAMPLES}" \
         --batch_size 8 \
-        --lm_models gpt2 \
+        --lm_models gpt2 Qwen/Qwen3-0.6B \
         --perturb_type "${perturb_type}" \
         --perturb_amplitude "${perturb_amp}" \
         --perturb_duration "${perturb_dur}" \
