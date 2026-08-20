@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
-#SBATCH --time=16:00:00
+#SBATCH --time=20:00:00
 #SBATCH --mem=160G
 #SBATCH --output=/home/rmfrieske/whisper_hallucination/slurm_logs/%j_hall_ctc_gate.out
 #SBATCH --error=/home/rmfrieske/whisper_hallucination/slurm_logs/%j_hall_ctc_gate.err
@@ -40,6 +40,9 @@ echo "DEV TSV override: ${DEV_TSV:-auto-detect}"
 echo "Output: ${OUTDIR}"
 echo "DEV max samples: ${DEV_MAX_SAMPLES:-1000}"
 echo "TEST max samples: ${TEST_MAX_SAMPLES:-1000}"
+echo "Primary LM: ${QWEN_MODEL:-Qwen/Qwen3-0.6B}"
+echo "Robustness LM: ${GPT2_MODEL:-gpt2}"
+echo "Hallucination thresholds: clean Base DEV means unless explicitly overridden"
 echo "Minimum clean DEV coverage: ${MIN_CLEAN_COVERAGE:-0.98}"
 echo "Seed: ${SEED:-20260820}"
 
@@ -59,20 +62,31 @@ fi
 if [[ "${REUSE_GENERATED:-0}" == "1" ]]; then
     EXTRA_ARGS+=(--reuse_generated_outputs)
 fi
+# Optional reproducibility overrides. By default all three thresholds are
+# estimated from clean Base DEV and then frozen for TEST.
+if [[ -n "${HALL_WER_THRESHOLD:-}" ]]; then
+    EXTRA_ARGS+=(--hall_wer_threshold "${HALL_WER_THRESHOLD}")
+fi
+if [[ -n "${HALL_QWEN_PLAUS_THRESHOLD:-}" ]]; then
+    EXTRA_ARGS+=(--hall_qwen_plaus_threshold "${HALL_QWEN_PLAUS_THRESHOLD}")
+fi
+if [[ -n "${HALL_GPT2_PLAUS_THRESHOLD:-}" ]]; then
+    EXTRA_ARGS+=(--hall_gpt2_plaus_threshold "${HALL_GPT2_PLAUS_THRESHOLD}")
+fi
 
 python -u acoustic_abstention_mitigation.py \
     --output_dir "${OUTDIR}" \
     --test_tsv "${TEST_TSV}" \
     --clips_dir "${CLIPS_DIR}" \
     --base_model_dir "${MODEL_DIR}" \
+    --qwen_model "${QWEN_MODEL:-Qwen/Qwen3-0.6B}" \
+    --gpt2_model "${GPT2_MODEL:-gpt2}" \
     --dev_max_samples "${DEV_MAX_SAMPLES:-1000}" \
     --test_max_samples "${TEST_MAX_SAMPLES:-1000}" \
     --batch_size "${BATCH_SIZE:-8}" \
     --ctc_batch_size "${CTC_BATCH_SIZE:-8}" \
     --lm_batch_size "${LM_BATCH_SIZE:-8}" \
     --min_clean_coverage "${MIN_CLEAN_COVERAGE:-0.98}" \
-    --hall_wer_threshold "${HALL_WER_THRESHOLD:-0.116215}" \
-    --hall_plaus_threshold "${HALL_PLAUS_THRESHOLD:-0.892170}" \
     --bootstrap "${N_BOOT:-10000}" \
     --seed "${SEED:-20260820}" \
     --perturbations \
@@ -83,7 +97,8 @@ python -u acoustic_abstention_mitigation.py \
 
 echo
 echo "=== Acoustic-consistency mitigation complete ==="
-echo "Frozen threshold: ${OUTDIR}/frozen_gate_threshold.json"
-echo "TEST summary:     ${OUTDIR}/test_mitigation_summary.csv"
-echo "TEST rows:        ${OUTDIR}/test_outputs_with_gate.csv"
-echo "Report:           ${OUTDIR}/report.json"
+echo "Dual-LM hallucination thresholds: ${OUTDIR}/frozen_hallucination_thresholds_dual_lm.json"
+echo "Frozen gate threshold:            ${OUTDIR}/frozen_gate_threshold.json"
+echo "TEST summary:                     ${OUTDIR}/test_mitigation_summary.csv"
+echo "TEST rows:                        ${OUTDIR}/test_outputs_with_gate.csv"
+echo "Report:                           ${OUTDIR}/report.json"
