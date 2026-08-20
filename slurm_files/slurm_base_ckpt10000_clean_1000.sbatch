@@ -26,7 +26,7 @@ ROOT=/scratch/vemotionsys/rmfrieske/whisper_hallucination
 MODEL_DIR=${ROOT}/base/checkpoint-10000
 TEST_TSV=/scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/test.tsv
 CLIPS_DIR=/scratch/vemotionsys/rmfrieske/datasets/cv-corpus-22.0-2025-06-20/en/clips
-OUTDIR=${ROOT}/failure_amplification_clean
+OUTDIR=${ROOT}/failure_amplification
 MAX_SAMPLES=1000
 
 mkdir -p "${OUTDIR}"
