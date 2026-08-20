@@ -60,6 +60,7 @@ for idx in "${!CONFIG_NAMES[@]}"; do
   echo "============================================================"
   echo "Config: ${CONFIG}"
   echo "Model:  ${MODEL_DIR}"
+  echo "LMs: GPT2 + Qwen3-0.6B"
   echo "============================================================"
 
   if [[ ! -d "${MODEL_DIR}" ]]; then
@@ -92,7 +93,7 @@ for idx in "${!CONFIG_NAMES[@]}"; do
       --perturb_duration "${PDUR}" \
       --max_samples "${MAX_SAMPLES}" \
       --batch_size 8 \
-      --lm_models gpt2 \
+      --lm_models gpt2 Qwen/Qwen3-0.6B \
       --num_log_examples 5
   done
 done
