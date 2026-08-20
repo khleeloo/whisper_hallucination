@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
-#SBATCH --time=04:00:00
+#SBATCH --time=12:00:00
 #SBATCH --mem=160G
 #SBATCH --output=/home/rmfrieske/whisper_hallucination/slurm_logs/%j_failure_amp.out
 #SBATCH --error=/home/rmfrieske/whisper_hallucination/slurm_logs/%j_failure_amp.err
@@ -30,12 +30,13 @@ CLIPS_DIR=/scratch/vemotionsys/rmfrieske/datasets/cv-corpus-22.0-2025-06-20/en/c
 STRESS_MAX_SAMPLES="${STRESS_MAX_SAMPLES:-1000}"
 
 OUT=${ROOT}/failure_amplification
+DUAL=${OUT}/dual_lm_sources
 CLEAN_BASE=${OUT}/per_utterance_base_ckpt10000_1000.csv
 CLEAN_RR=${ROOT}/eval_64pct/per_utterance_rr_64pct_checkpoint-9375.csv
 CLEAN_RU=${ROOT}/eval_64pct/per_utterance_ru_64pct_checkpoint-9375.csv
-mkdir -p "$OUT"
+mkdir -p "$OUT" "$DUAL"
 
-echo "=== Failure amplification analysis ==="
+echo "=== Structured-mismatch failure-signature analysis: Qwen3 + GPT2 ==="
 echo "Host: $(hostname)"
 echo "Job ID: ${SLURM_JOB_ID:-unknown}"
 echo "Repo commit: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
@@ -60,34 +61,54 @@ echo "Clean UR files: $UR_COUNT"
 echo "Clean UU files: $UU_COUNT"
 echo "Main stress TSVs: $MAIN_STRESS_COUNT"
 echo "UR checkpoint-10000 stress TSVs: $UR_STRESS_COUNT"
-echo "Legacy stress TSVs without utterance IDs will be reconstructed from test.tsv order."
-echo "Historical WAcc columns are ignored by analyze_failure_amplification.py."
+echo "Primary plausibility LM: Qwen/Qwen3-0.6B"
+echo "Parallel robustness LM: GPT2"
+echo "Historical WAcc columns are ignored."
 
 [[ "$UR_COUNT" -gt 0 ]] || { echo "ERROR: no clean UR checkpoint-10000 CSVs found" >&2; exit 2; }
 [[ "$UU_COUNT" -gt 0 ]] || { echo "ERROR: no clean UU final CSVs found" >&2; exit 2; }
 [[ "$MAIN_STRESS_COUNT" -gt 0 ]] || { echo "ERROR: no perturbed details TSVs in $STRESS_MAIN" >&2; exit 2; }
 
-ARGS=(
-    --perturbed_glob "$STRESS_MAIN/details_*.tsv"
-    --clean "Base=$CLEAN_BASE"
-    --clean "RR=$CLEAN_RR"
-    --clean "RU=$CLEAN_RU"
-    --clean "UR=${ROOT}/eval_64pct/per_utterance_ur_64pct_checkpoint-10000*.csv"
-    --clean "UU=${ROOT}/eval_64pct/per_utterance_uu_64pct_final*.csv"
-    --test_tsv "$TEST_TSV"
-    --clips_dir "$CLIPS_DIR"
-    --stress_max_samples "$STRESS_MAX_SAMPLES"
-    --output_dir "$OUT"
-    --bootstrap 10000
-    --seed 42
+# Legacy stress TSVs stored only the first LM in a generic norm_plausibility
+# column. They were generated with GPT2 first, so reuse that exact score and
+# add explicit Qwen3-0.6B scores post hoc. Clean files with explicit per-LM
+# columns are reused without rescoring those rows. This avoids re-running Whisper.
+echo "=== Canonicalizing all sources to explicit Qwen3 + GPT2 columns ==="
+RESCORE_ARGS=(
+    --input_glob "$STRESS_MAIN/details_*.tsv"
+    --input "$CLEAN_BASE"
+    --input "$CLEAN_RR"
+    --input "$CLEAN_RU"
+    --input_glob "${ROOT}/eval_64pct/per_utterance_ur_64pct_checkpoint-10000*.csv"
+    --input_glob "${ROOT}/eval_64pct/per_utterance_uu_64pct_final*.csv"
+    --output_dir "$DUAL"
+    --qwen_model Qwen/Qwen3-0.6B
+    --gpt2_model gpt2
+    --lm_batch_size "${LM_BATCH_SIZE:-8}"
+    --legacy_first_lm gpt2
 )
-
 if [[ "$UR_STRESS_COUNT" -gt 0 ]]; then
-    ARGS+=(--perturbed_glob "$STRESS_UR/details_*.tsv")
+    RESCORE_ARGS+=(--input_glob "$STRESS_UR/details_*.tsv")
 fi
+python -u rescore_dual_lm_outputs.py "${RESCORE_ARGS[@]}"
 
-echo "=== Running analysis ==="
-python -u analyze_failure_amplification.py "${ARGS[@]}"
+DUAL_STRESS_COUNT=$(find "$DUAL" -maxdepth 1 -type f -name 'details_*.tsv' | wc -l || true)
+[[ "$DUAL_STRESS_COUNT" -gt 0 ]] || { echo "ERROR: no dual-LM stress TSVs produced" >&2; exit 2; }
+
+echo "=== Running paired dual-LM analysis ==="
+python -u analyze_failure_amplification_dual_lm.py \
+    --perturbed_glob "$DUAL/details_*.tsv" \
+    --clean "Base=$DUAL/per_utterance_base_ckpt10000_1000.csv" \
+    --clean "RR=$DUAL/per_utterance_rr_64pct_checkpoint-9375.csv" \
+    --clean "RU=$DUAL/per_utterance_ru_64pct_checkpoint-9375.csv" \
+    --clean "UR=$DUAL/per_utterance_ur_64pct_checkpoint-10000*.csv" \
+    --clean "UU=$DUAL/per_utterance_uu_64pct_final*.csv" \
+    --test_tsv "$TEST_TSV" \
+    --clips_dir "$CLIPS_DIR" \
+    --stress_max_samples "$STRESS_MAX_SAMPLES" \
+    --output_dir "$OUT" \
+    --bootstrap 10000 \
+    --seed 42
 
 echo ""
 echo "=== Outputs ==="
