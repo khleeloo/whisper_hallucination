@@ -2,9 +2,18 @@
 """Test whether structured label noise amplifies intrinsic perturbation failures.
 
 Perturbed inputs are legacy/new ``details_*.tsv`` stress outputs. Clean baselines
-are per-utterance checkpoint CSVs. New stress files should contain an utterance ID;
-legacy stress files do not, so their IDs are reconstructed from the exact test.tsv
-order used by evaluate_dual_metric.py. WAcc is intentionally ignored everywhere.
+are per-utterance checkpoint CSVs. Legacy stress files without utterance IDs are
+reconstructed from the exact Common Voice test.tsv order used by
+``evaluate_dual_metric.py``.
+
+WAcc is intentionally not used. Hallucination is re-derived with the canonical
+fixed Base thresholds:
+
+    Hallucination_i = [WER_i > mean(Base clean WER)] AND
+                      [Plausibility_i > mean(Base clean plausibility)]
+
+GroundingGap is read directly when present, or reconstructed as
+``hyp_ctc_nll - ref_ctc_nll`` when both CTC columns are present.
 
 For metric m, condition c, perturbation p:
     delta[c,p,m] = mean(Y[c,p,m] - Y[c,clean,m])
@@ -31,17 +40,14 @@ CONDITIONS = ["Base", "RR", "RU", "UR", "UU"]
 CV_RE = re.compile(r"(?:common_voice_en_\d+)", re.IGNORECASE)
 WHISPER_NORMALIZER = BasicTextNormalizer()
 
-# WAcc deliberately excluded. Historical files may contain it, but it is not read.
 METRIC_CANDIDATES = {
     "WER": ["wer", "WER"],
     "Hallucination": ["hallucination_like", "hallucination"],
     "Rep2": ["bigram_rep_count", "2gram_reps", "rep2", "Rep2"],
     "Rep3": ["trigram_rep_count", "3gram_reps", "rep3", "Rep3"],
     "Rep4": ["fourgram_rep_count", "4gram_reps", "rep4", "Rep4"],
-    "GroundingGap": ["grounding_gap", "GroundingGap", "grounding"],
-    # Existing stress jobs use --lm_models gpt2, so norm_plausibility is GPT-2.
+    "GroundingGap": ["grounding_gap", "GroundingGap", "grounding", "ctc_grounding_gap"],
     "PlausibilityGPT2": ["normalized_sentence_score_gpt2", "norm_plausibility"],
-    # Only accept explicitly named Qwen columns as Qwen plausibility.
     "PlausibilityQwen": [
         "normalized_sentence_score_Qwen3-0.6B",
         "qwen_plausibility",
@@ -49,14 +55,11 @@ METRIC_CANDIDATES = {
     ],
 }
 
+REF_CTC_CANDIDATES = ["ref_ctc_nll", "reference_ctc_nll"]
+HYP_CTC_CANDIDATES = ["hyp_ctc_nll", "hypothesis_ctc_nll"]
+
 
 def normalize_text(value: object) -> str:
-    """Normalize references exactly as Whisper evaluation does.
-
-    Legacy stress TSV references were already passed through BasicTextNormalizer,
-    while test.tsv contains raw punctuation/contractions. Applying the same Whisper
-    normalizer to both sides makes provenance validation compare equivalent text.
-    """
     if value is None or (isinstance(value, float) and math.isnan(value)):
         return ""
     return re.sub(r"\s+", " ", WHISPER_NORMALIZER(str(value))).strip()
@@ -64,7 +67,14 @@ def normalize_text(value: object) -> str:
 
 def canonical_condition(raw: str) -> str:
     value = str(raw).strip().lower()
-    for key, out in [("base", "Base"), ("clean", "Base"), ("rr", "RR"), ("ru", "RU"), ("ur", "UR"), ("uu", "UU")]:
+    for key, out in [
+        ("base", "Base"),
+        ("clean", "Base"),
+        ("rr", "RR"),
+        ("ru", "RU"),
+        ("ur", "UR"),
+        ("uu", "UU"),
+    ]:
         if value == key or value.startswith(key + "_"):
             return out
     raise ValueError(f"Unknown condition: {raw}")
@@ -85,17 +95,20 @@ def parse_perturbed_filename(path: Path) -> Tuple[str, str]:
     return canonical_condition(m.group(1)), m.group(2) + m.group(3)
 
 
+def first_present_column(df: pd.DataFrame, candidates: Sequence[str]) -> str | None:
+    return next((col for col in candidates if col in df.columns), None)
+
+
 def find_metric_columns(df: pd.DataFrame) -> Dict[str, str]:
     found: Dict[str, str] = {}
     for metric, candidates in METRIC_CANDIDATES.items():
-        for col in candidates:
-            if col in df.columns:
-                found[metric] = col
-                break
-    # Historical stress TSVs carrying hallucination_wacc_threshold used the old
-    # WAcc-based hallucination label. Never reuse that label in the current analysis.
-    if "hallucination_wacc_threshold" in df.columns:
-        found.pop("Hallucination", None)
+        col = first_present_column(df, candidates)
+        if col is not None:
+            found[metric] = col
+
+    # Hallucination is intentionally re-derived later from WER + plausibility
+    # using fixed Base clean thresholds. Never trust legacy WAcc-derived flags.
+    found.pop("Hallucination", None)
     return found
 
 
@@ -105,12 +118,13 @@ def extract_cv_id(value: object) -> str | None:
 
 
 def infer_utterance_ids(df: pd.DataFrame, source_file: str) -> pd.Series | None:
-    """Return IDs from an explicit/id-like column, or None for legacy stress TSVs."""
     preferred = [
         "utterance_id", "audio_id", "clip_id", "path", "audio_path",
         "filename", "file", "model_name",
     ]
-    ordered = [c for c in preferred if c in df.columns] + [c for c in df.columns if c not in preferred]
+    ordered = [c for c in preferred if c in df.columns] + [
+        c for c in df.columns if c not in preferred
+    ]
     for col in ordered:
         sample = df[col].astype(str)
         rate = sample.str.contains(r"(?:common_voice_en_\d+)", regex=True, na=False).mean()
@@ -123,7 +137,6 @@ def infer_utterance_ids(df: pd.DataFrame, source_file: str) -> pd.Series | None:
 
 
 def build_test_manifest(test_tsv: str, clips_dir: str, max_samples: int | None) -> pd.DataFrame:
-    """Reproduce evaluate_dual_metric.load_test_data ordering exactly."""
     rows = []
     with open(test_tsv, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f, delimiter="\t")
@@ -156,6 +169,7 @@ def frame_from_df(
 ) -> pd.DataFrame:
     if "reference" not in df.columns:
         raise ValueError(f"{source_file} has no 'reference' column")
+
     metric_cols = find_metric_columns(df)
     if not metric_cols:
         raise ValueError(f"No recognized metrics in {source_file}; columns={list(df.columns)}")
@@ -202,8 +216,20 @@ def frame_from_df(
     out["utterance_id"] = ids.astype(str).str.lower().to_numpy()
     out["reference"] = df["reference"].astype(str).to_numpy()
     out["reference_norm"] = df["reference"].map(normalize_text).to_numpy()
+
     for metric, col in metric_cols.items():
         out[metric] = pd.to_numeric(df[col], errors="coerce").to_numpy()
+
+    # GroundingGap can be reconstructed exactly if the two normalized CTC NLLs
+    # were saved even when a dedicated grounding_gap column was not.
+    if "GroundingGap" not in out.columns:
+        ref_ctc_col = first_present_column(df, REF_CTC_CANDIDATES)
+        hyp_ctc_col = first_present_column(df, HYP_CTC_CANDIDATES)
+        if ref_ctc_col and hyp_ctc_col:
+            ref_ctc = pd.to_numeric(df[ref_ctc_col], errors="coerce")
+            hyp_ctc = pd.to_numeric(df[hyp_ctc_col], errors="coerce")
+            out["GroundingGap"] = (hyp_ctc - ref_ctc).to_numpy()
+
     return out
 
 
@@ -244,38 +270,127 @@ def load_clean(specs: Sequence[str]) -> pd.DataFrame:
             parts.append(frame_from_df(df, condition, "none", path_str))
         merged = pd.concat(parts, ignore_index=True, sort=False)
         if merged["utterance_id"].duplicated().any():
-            dups = merged.loc[merged.utterance_id.duplicated(keep=False), "utterance_id"].head().tolist()
+            dups = merged.loc[
+                merged.utterance_id.duplicated(keep=False), "utterance_id"
+            ].head().tolist()
             raise ValueError(f"Duplicate clean utterance IDs for {condition}: {dups}")
         frames.append(merged)
     return pd.concat(frames, ignore_index=True, sort=False)
 
 
+def add_canonical_hallucination(
+    perturbed: pd.DataFrame,
+    clean: pd.DataFrame,
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, float | str]]:
+    """Add comparable hallucination labels using fixed Base-clean thresholds."""
+    if "WER" not in clean.columns or "WER" not in perturbed.columns:
+        raise ValueError("Canonical Hallucination requires WER in clean and perturbed data")
+
+    if "PlausibilityGPT2" in clean.columns and "PlausibilityGPT2" in perturbed.columns:
+        fluency_col = "PlausibilityGPT2"
+    elif "PlausibilityQwen" in clean.columns and "PlausibilityQwen" in perturbed.columns:
+        fluency_col = "PlausibilityQwen"
+    else:
+        raise ValueError(
+            "Canonical Hallucination requires a shared plausibility metric "
+            "(PlausibilityGPT2 preferred, otherwise PlausibilityQwen)"
+        )
+
+    base = clean[clean["condition"] == "Base"]
+    if base.empty:
+        raise ValueError("Canonical Hallucination requires Base clean rows")
+
+    wer_threshold = float(pd.to_numeric(base["WER"], errors="coerce").mean())
+    fluency_threshold = float(pd.to_numeric(base[fluency_col], errors="coerce").mean())
+    if not np.isfinite(wer_threshold) or not np.isfinite(fluency_threshold):
+        raise ValueError("Non-finite Base thresholds for canonical Hallucination")
+
+    def apply(df: pd.DataFrame) -> pd.DataFrame:
+        out = df.copy()
+        wer = pd.to_numeric(out["WER"], errors="coerce")
+        fluency = pd.to_numeric(out[fluency_col], errors="coerce")
+        valid = wer.notna() & fluency.notna()
+        hall = pd.Series(np.nan, index=out.index, dtype=float)
+        hall.loc[valid] = (
+            (wer.loc[valid] > wer_threshold)
+            & (fluency.loc[valid] > fluency_threshold)
+        ).astype(float)
+        out["Hallucination"] = hall
+        return out
+
+    metadata: Dict[str, float | str] = {
+        "criterion": "WER > mean(Base clean WER) AND plausibility > mean(Base clean plausibility)",
+        "plausibility_metric": fluency_col,
+        "wer_threshold": wer_threshold,
+        "plausibility_threshold": fluency_threshold,
+    }
+    print(
+        "Canonical Hallucination: "
+        f"WER>{wer_threshold:.6f}, {fluency_col}>{fluency_threshold:.6f}"
+    )
+    return apply(perturbed), apply(clean), metadata
+
+
+def report_metric_availability(perturbed: pd.DataFrame, clean: pd.DataFrame) -> Tuple[List[str], List[str]]:
+    available = [
+        metric
+        for metric in METRIC_CANDIDATES
+        if metric in perturbed.columns and metric in clean.columns
+    ]
+    missing = [metric for metric in METRIC_CANDIDATES if metric not in available]
+    print(f"Metrics available for paired analysis: {available}")
+    if missing:
+        print(f"Metrics unavailable from current source files: {missing}")
+    if "GroundingGap" in missing:
+        print(
+            "GroundingGap note: historical TSV/CSV files must contain either "
+            "'grounding_gap' directly or both 'hyp_ctc_nll' and 'ref_ctc_nll'. "
+            "It cannot be reconstructed exactly from WER/plausibility alone."
+        )
+    return available, missing
+
+
 def pair_with_clean(perturbed: pd.DataFrame, clean: pd.DataFrame) -> pd.DataFrame:
-    shared_metrics = [m for m in METRIC_CANDIDATES if m in perturbed.columns and m in clean.columns]
+    shared_metrics = [
+        m for m in METRIC_CANDIDATES if m in perturbed.columns and m in clean.columns
+    ]
     if not shared_metrics:
         raise ValueError("Clean CSVs and perturbed TSVs have no shared recognized metrics")
+
     key = ["condition", "utterance_id"]
     clean_small = clean[key + ["reference_norm"] + shared_metrics].copy()
     clean_small = clean_small.rename(
-        columns={"reference_norm": "reference_norm_clean", **{m: f"{m}_clean" for m in shared_metrics}}
+        columns={
+            "reference_norm": "reference_norm_clean",
+            **{m: f"{m}_clean" for m in shared_metrics},
+        }
     )
     paired = perturbed.merge(clean_small, on=key, how="left", validate="many_to_one")
     sentinel = f"{shared_metrics[0]}_clean"
     missing = paired[sentinel].isna()
     if missing.any():
-        examples = paired.loc[missing, ["condition", "utterance_id", "source_file"]].head().to_dict("records")
+        examples = paired.loc[
+            missing, ["condition", "utterance_id", "source_file"]
+        ].head().to_dict("records")
         raise ValueError(
-            f"{int(missing.sum()):,}/{len(paired):,} perturbed rows could not be paired by utterance ID. "
-            f"Examples={examples}"
+            f"{int(missing.sum()):,}/{len(paired):,} perturbed rows could not be paired "
+            f"by utterance ID. Examples={examples}"
         )
+
     ref_mismatch = paired["reference_norm"] != paired["reference_norm_clean"]
     if ref_mismatch.any():
-        examples = paired.loc[ref_mismatch, ["condition", "utterance_id", "reference", "reference_norm_clean"]].head().to_dict("records")
+        examples = paired.loc[
+            ref_mismatch,
+            ["condition", "utterance_id", "reference", "reference_norm_clean"],
+        ].head().to_dict("records")
         raise ValueError(
-            f"{int(ref_mismatch.sum()):,}/{len(paired):,} paired rows have mismatching references. Examples={examples}"
+            f"{int(ref_mismatch.sum()):,}/{len(paired):,} paired rows have mismatching "
+            f"references. Examples={examples}"
         )
+
     for metric in shared_metrics:
         paired[f"delta_{metric}"] = paired[metric] - paired[f"{metric}_clean"]
+
     print(f"Paired all {len(paired):,} perturbed rows by Common Voice utterance ID")
     print(f"Shared metrics: {shared_metrics}")
     return paired
@@ -293,73 +408,141 @@ def bootstrap_mean_ci(values: np.ndarray, n_boot: int, seed: int) -> Tuple[float
     return tuple(np.quantile(means, [0.025, 0.975]).tolist())
 
 
-def bootstrap_did_ci(noisy: np.ndarray, base: np.ndarray, n_boot: int, seed: int) -> Tuple[float, float]:
-    a = np.asarray(noisy, dtype=float); a = a[np.isfinite(a)]
-    b = np.asarray(base, dtype=float); b = b[np.isfinite(b)]
+def bootstrap_did_ci(
+    noisy: np.ndarray,
+    base: np.ndarray,
+    n_boot: int,
+    seed: int,
+) -> Tuple[float, float]:
+    a = np.asarray(noisy, dtype=float)
+    a = a[np.isfinite(a)]
+    b = np.asarray(base, dtype=float)
+    b = b[np.isfinite(b)]
     if not len(a) or not len(b):
         return np.nan, np.nan
     rng = np.random.default_rng(seed)
     vals = np.empty(n_boot)
     for i in range(n_boot):
-        vals[i] = np.mean(a[rng.integers(0, len(a), len(a))]) - np.mean(b[rng.integers(0, len(b), len(b))])
+        vals[i] = (
+            np.mean(a[rng.integers(0, len(a), len(a))])
+            - np.mean(b[rng.integers(0, len(b), len(b))])
+        )
     return tuple(np.quantile(vals, [0.025, 0.975]).tolist())
 
 
 def summarize_deltas(paired: pd.DataFrame, n_boot: int, seed: int) -> pd.DataFrame:
     metrics = [m for m in METRIC_CANDIDATES if f"delta_{m}" in paired.columns]
     rows = []
-    for (condition, perturbation), group in paired.groupby(["condition", "perturbation"], sort=True):
+    for (condition, perturbation), group in paired.groupby(
+        ["condition", "perturbation"], sort=True
+    ):
         for metric in metrics:
-            vals = pd.to_numeric(group[f"delta_{metric}"], errors="coerce").dropna().to_numpy(float)
+            vals = pd.to_numeric(
+                group[f"delta_{metric}"], errors="coerce"
+            ).dropna().to_numpy(float)
             if not len(vals):
                 continue
             lo, hi = bootstrap_mean_ci(vals, n_boot, seed + len(rows))
-            rows.append({"condition": condition, "perturbation": perturbation, "metric": metric,
-                         "N": len(vals), "delta_mean": float(np.mean(vals)),
-                         "delta_ci_low": lo, "delta_ci_high": hi})
+            rows.append({
+                "condition": condition,
+                "perturbation": perturbation,
+                "metric": metric,
+                "N": len(vals),
+                "delta_mean": float(np.mean(vals)),
+                "delta_ci_low": lo,
+                "delta_ci_high": hi,
+            })
     return pd.DataFrame(rows)
 
 
-def classify_effect(base_delta: float, noisy_delta: float, lo: float, hi: float, eps: float) -> str:
+def classify_effect(
+    base_delta: float,
+    noisy_delta: float,
+    lo: float,
+    hi: float,
+    eps: float,
+) -> str:
     if abs(base_delta) <= eps:
-        if noisy_delta > eps: return "condition-specific increase"
-        if noisy_delta < -eps: return "condition-specific decrease"
+        if noisy_delta > eps:
+            return "condition-specific increase"
+        if noisy_delta < -eps:
+            return "condition-specific decrease"
         return "no material response"
     if base_delta > eps:
-        if lo > 0: return "amplified intrinsic failure"
-        if hi < 0: return "attenuated intrinsic failure"
+        if lo > 0:
+            return "amplified intrinsic failure"
+        if hi < 0:
+            return "attenuated intrinsic failure"
         return "intrinsic response reproduced"
     return "base response decreases metric"
 
 
-def difference_in_differences(paired: pd.DataFrame, summary: pd.DataFrame, n_boot: int, seed: int, eps: float) -> pd.DataFrame:
+def difference_in_differences(
+    paired: pd.DataFrame,
+    summary: pd.DataFrame,
+    n_boot: int,
+    seed: int,
+    eps: float,
+) -> pd.DataFrame:
     rows = []
-    for condition in [c for c in CONDITIONS if c != "Base" and c in set(paired.condition)]:
+    for condition in [
+        c for c in CONDITIONS if c != "Base" and c in set(paired.condition)
+    ]:
         for perturbation in sorted(summary.perturbation.unique()):
             for metric in sorted(summary.metric.unique()):
                 col = f"delta_{metric}"
                 if col not in paired.columns:
                     continue
-                base = pd.to_numeric(paired.loc[(paired.condition == "Base") & (paired.perturbation == perturbation), col], errors="coerce").dropna().to_numpy(float)
-                noisy = pd.to_numeric(paired.loc[(paired.condition == condition) & (paired.perturbation == perturbation), col], errors="coerce").dropna().to_numpy(float)
+                base = pd.to_numeric(
+                    paired.loc[
+                        (paired.condition == "Base")
+                        & (paired.perturbation == perturbation),
+                        col,
+                    ],
+                    errors="coerce",
+                ).dropna().to_numpy(float)
+                noisy = pd.to_numeric(
+                    paired.loc[
+                        (paired.condition == condition)
+                        & (paired.perturbation == perturbation),
+                        col,
+                    ],
+                    errors="coerce",
+                ).dropna().to_numpy(float)
                 if not len(base) or not len(noisy):
                     continue
-                bmean, nmean = float(np.mean(base)), float(np.mean(noisy))
+
+                bmean = float(np.mean(base))
+                nmean = float(np.mean(noisy))
                 did = nmean - bmean
                 lo, hi = bootstrap_did_ci(noisy, base, n_boot, seed + len(rows))
-                ratio = nmean / bmean if abs(bmean) > eps and np.sign(bmean) == np.sign(nmean) else np.nan
-                rows.append({"condition": condition, "perturbation": perturbation, "metric": metric,
-                             "base_delta": bmean, "noisy_delta": nmean,
-                             "difference_in_differences": did, "did_ci_low": lo, "did_ci_high": hi,
-                             "amplification_ratio": ratio,
-                             "interpretation": classify_effect(bmean, nmean, lo, hi, eps)})
+                ratio = (
+                    nmean / bmean
+                    if abs(bmean) > eps and np.sign(bmean) == np.sign(nmean)
+                    else np.nan
+                )
+                rows.append({
+                    "condition": condition,
+                    "perturbation": perturbation,
+                    "metric": metric,
+                    "base_delta": bmean,
+                    "noisy_delta": nmean,
+                    "difference_in_differences": did,
+                    "did_ci_low": lo,
+                    "did_ci_high": hi,
+                    "amplification_ratio": ratio,
+                    "interpretation": classify_effect(bmean, nmean, lo, hi, eps),
+                })
     return pd.DataFrame(rows)
 
 
 def spearman(x: np.ndarray, y: np.ndarray) -> float:
-    if len(x) < 2 or len(y) < 2: return np.nan
-    rx = pd.Series(x).rank().to_numpy(float); ry = pd.Series(y).rank().to_numpy(float)
-    if np.std(rx) == 0 or np.std(ry) == 0: return np.nan
+    if len(x) < 2 or len(y) < 2:
+        return np.nan
+    rx = pd.Series(x).rank().to_numpy(float)
+    ry = pd.Series(y).rank().to_numpy(float)
+    if np.std(rx) == 0 or np.std(ry) == 0:
+        return np.nan
     return float(np.corrcoef(rx, ry)[0, 1])
 
 
@@ -369,34 +552,55 @@ def cosine(x: np.ndarray, y: np.ndarray) -> float:
 
 
 def ols(x: np.ndarray, y: np.ndarray) -> Tuple[float, float, float]:
-    if len(x) < 2 or np.var(x) == 0: return np.nan, np.nan, np.nan
+    if len(x) < 2 or np.var(x) == 0:
+        return np.nan, np.nan, np.nan
     X = np.column_stack([np.ones(len(x)), x])
     coef, *_ = np.linalg.lstsq(X, y, rcond=None)
     pred = X @ coef
-    ss_res = float(np.sum((y - pred) ** 2)); ss_tot = float(np.sum((y - np.mean(y)) ** 2))
-    return float(coef[0]), float(coef[1]), (1 - ss_res / ss_tot if ss_tot > 0 else np.nan)
+    ss_res = float(np.sum((y - pred) ** 2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    return (
+        float(coef[0]),
+        float(coef[1]),
+        1 - ss_res / ss_tot if ss_tot > 0 else np.nan,
+    )
 
 
 def signature_similarity(summary: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for metric in sorted(summary.metric.unique()):
-        base = summary[(summary.condition == "Base") & (summary.metric == metric)][["perturbation", "delta_mean"]].rename(columns={"delta_mean": "base_delta"})
+        base = summary[
+            (summary.condition == "Base") & (summary.metric == metric)
+        ][["perturbation", "delta_mean"]].rename(columns={"delta_mean": "base_delta"})
         for condition in [c for c in CONDITIONS if c != "Base"]:
-            other = summary[(summary.condition == condition) & (summary.metric == metric)][["perturbation", "delta_mean"]].rename(columns={"delta_mean": "condition_delta"})
+            other = summary[
+                (summary.condition == condition) & (summary.metric == metric)
+            ][["perturbation", "delta_mean"]].rename(
+                columns={"delta_mean": "condition_delta"}
+            )
             joined = base.merge(other, on="perturbation", how="inner")
-            if len(joined) < 2: continue
-            x, y = joined.base_delta.to_numpy(float), joined.condition_delta.to_numpy(float)
+            if len(joined) < 2:
+                continue
+            x = joined.base_delta.to_numpy(float)
+            y = joined.condition_delta.to_numpy(float)
             intercept, slope, r2 = ols(x, y)
-            rows.append({"condition": condition, "metric": metric,
-                         "n_perturbation_points": len(joined), "spearman": spearman(x, y),
-                         "cosine_similarity": cosine(x, y), "ols_intercept": intercept,
-                         "amplification_slope_beta": slope, "ols_r2": r2})
+            rows.append({
+                "condition": condition,
+                "metric": metric,
+                "n_perturbation_points": len(joined),
+                "spearman": spearman(x, y),
+                "cosine_similarity": cosine(x, y),
+                "ols_intercept": intercept,
+                "amplification_slope_beta": slope,
+                "ols_r2": r2,
+            })
     return pd.DataFrame(rows)
 
 
 def collect_globs(patterns: Sequence[str]) -> List[str]:
     paths = []
-    for pattern in patterns: paths.extend(glob.glob(pattern))
+    for pattern in patterns:
+        paths.extend(glob.glob(pattern))
     return sorted(set(paths))
 
 
@@ -412,11 +616,18 @@ def main() -> None:
     p.add_argument("--bootstrap", type=int, default=10000)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--zero_epsilon", type=float, default=1e-6)
+    p.add_argument(
+        "--require_grounding_gap",
+        action="store_true",
+        help="Fail if GroundingGap is unavailable in either clean or perturbed source files.",
+    )
     args = p.parse_args()
 
     perturbed_paths = collect_globs(args.perturbed_glob + args.details_glob)
-    if not perturbed_paths: raise FileNotFoundError("No perturbed details TSVs matched")
-    if not args.clean: raise ValueError("At least one --clean CONDITION=PATH_OR_GLOB is required")
+    if not perturbed_paths:
+        raise FileNotFoundError("No perturbed details TSVs matched")
+    if not args.clean:
+        raise ValueError("At least one --clean CONDITION=PATH_OR_GLOB is required")
 
     manifest = None
     if args.test_tsv or args.clips_dir:
@@ -430,27 +641,50 @@ def main() -> None:
     print(f"Loaded perturbed rows: {len(perturbed):,} from {len(perturbed_paths)} files")
     print(f"Loaded clean rows: {len(clean):,}")
 
+    perturbed, clean, hallucination_meta = add_canonical_hallucination(perturbed, clean)
+    metrics_available, metrics_missing = report_metric_availability(perturbed, clean)
+
+    if args.require_grounding_gap and "GroundingGap" in metrics_missing:
+        raise ValueError(
+            "GroundingGap is required but unavailable. Supply source files containing "
+            "'grounding_gap' or both 'hyp_ctc_nll' and 'ref_ctc_nll'. Historical "
+            "WER/plausibility-only TSVs are insufficient to reconstruct it exactly."
+        )
+
     paired = pair_with_clean(perturbed, clean)
     summary = summarize_deltas(paired, args.bootstrap, args.seed)
-    did = difference_in_differences(paired, summary, args.bootstrap, args.seed, args.zero_epsilon)
+    did = difference_in_differences(
+        paired, summary, args.bootstrap, args.seed, args.zero_epsilon
+    )
     similarity = signature_similarity(summary)
 
-    out = Path(args.output_dir); out.mkdir(parents=True, exist_ok=True)
+    out = Path(args.output_dir)
+    out.mkdir(parents=True, exist_ok=True)
     paired.to_csv(out / "paired_clean_to_perturbed_deltas.csv", index=False)
     summary.to_csv(out / "perturbation_delta_summary.csv", index=False)
     did.to_csv(out / "difference_in_differences.csv", index=False)
     similarity.to_csv(out / "signature_similarity.csv", index=False)
+
     payload = {
         "decision_rule": {
             "amplified": "Base delta > 0 and bootstrap 95% CI for DID entirely > 0",
             "reproduced": "Base delta > 0 and bootstrap 95% CI for DID includes 0",
             "attenuated": "Base delta > 0 and bootstrap 95% CI for DID entirely < 0",
         },
-        "interpretation_counts": {str(k): int(v) for k, v in did.interpretation.value_counts().to_dict().items()} if not did.empty else {},
+        "hallucination_definition": hallucination_meta,
+        "metrics_available": metrics_available,
+        "metrics_missing": metrics_missing,
+        "interpretation_counts": (
+            {str(k): int(v) for k, v in did.interpretation.value_counts().to_dict().items()}
+            if not did.empty
+            else {}
+        ),
         "n_paired_rows": int(len(paired)),
         "wacc_used": False,
     }
-    (out / "hypothesis_check_summary.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    (out / "hypothesis_check_summary.json").write_text(
+        json.dumps(payload, indent=2), encoding="utf-8"
+    )
 
     print("\n=== Failure amplification hypothesis check ===")
     print(f"Paired perturbed rows: {len(paired):,}")
