@@ -57,6 +57,7 @@ run_eval() {
     echo "Perturbation: ${perturb_type}, amp=${perturb_amp}, dur=${perturb_dur}"
     echo "Perturbation tag: ${tag}"
     echo "Max samples: ${MAX_SAMPLES}"
+    echo "LMs: GPT2 + Qwen3-0.6B"
     echo "Output: ${outdir}"
 
     python "${EVAL_PY}" \
@@ -68,7 +69,7 @@ run_eval() {
         --config_name "${CONFIG}" \
         --max_samples "${MAX_SAMPLES}" \
         --batch_size 8 \
-        --lm_models gpt2 \
+        --lm_models gpt2 Qwen/Qwen3-0.6B \
         --perturb_type "${perturb_type}" \
         --perturb_amplitude "${perturb_amp}" \
         --perturb_duration "${perturb_dur}" \
