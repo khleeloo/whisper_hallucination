@@ -29,7 +29,7 @@ TEST_TSV=/scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/test.tsv
 CLIPS_DIR=/scratch/vemotionsys/rmfrieske/datasets/cv-corpus-22.0-2025-06-20/en/clips
 STRESS_MAX_SAMPLES="${STRESS_MAX_SAMPLES:-1000}"
 
-CLEAN_BASE=${ROOT}/eval_validation/per_utterance_base_ckpt14000.csv
+CLEAN_BASE=${ROOT}/failure_amplification_clean/per_utterance_base_ckpt10000_1000.csv
 CLEAN_RR=${ROOT}/eval_64pct/per_utterance_rr_64pct_checkpoint-9375.csv
 CLEAN_RU=${ROOT}/eval_64pct/per_utterance_ru_64pct_checkpoint-9375.csv
 OUT=${ROOT}/failure_amplification
@@ -55,6 +55,7 @@ UR_STRESS_COUNT=$(find "$STRESS_UR" -maxdepth 1 -type f -name 'details_*.tsv' 2>
 echo "Test TSV: $TEST_TSV"
 echo "Clips: $CLIPS_DIR"
 echo "Stress max samples: $STRESS_MAX_SAMPLES"
+echo "Clean Base: $CLEAN_BASE"
 echo "Clean UR files: $UR_COUNT"
 echo "Clean UU files: $UU_COUNT"
 echo "Main stress TSVs: $MAIN_STRESS_COUNT"
