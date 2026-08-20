@@ -38,6 +38,7 @@ echo "Repo commit: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 echo "Model: ${MODEL_DIR}"
 echo "Test TSV: ${TEST_TSV}"
 echo "Max samples: ${MAX_SAMPLES}"
+echo "LMs: GPT2 + Qwen3-0.6B"
 echo "Output: ${OUTDIR}"
 
 if [[ ! -f "${MODEL_DIR}/adapter_config.json" ]]; then
@@ -59,7 +60,7 @@ python -u evaluate_dual_metric.py \
     --config_name base \
     --max_samples "${MAX_SAMPLES}" \
     --batch_size 8 \
-    --lm_models gpt2 \
+    --lm_models gpt2 Qwen/Qwen3-0.6B \
     --perturb_type none \
     --perturb_amplitude 0.0 \
     --perturb_duration 0.0 \
