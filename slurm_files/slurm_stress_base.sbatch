@@ -62,6 +62,7 @@ for IDX in "${!PERTURB_TYPES[@]}"; do
     echo "Perturbation: ${PERTURB_TYPE}, amp=${PERTURB_AMP}, dur=${PERTURB_DUR}"
     echo "Perturbation tag: ${PERTURB_TAG}"
     echo "Max samples: ${MAX_SAMPLES}"
+    echo "LMs: GPT2 + Qwen3-0.6B"
     echo "Output: ${OUTDIR}"
 
     python "${EVAL_PY}" \
@@ -73,7 +74,7 @@ for IDX in "${!PERTURB_TYPES[@]}"; do
         --config_name "${CONFIG}" \
         --max_samples "${MAX_SAMPLES}" \
         --batch_size 8 \
-        --lm_models gpt2 \
+        --lm_models gpt2 Qwen/Qwen3-0.6B \
         --perturb_type "${PERTURB_TYPE}" \
         --perturb_amplitude "${PERTURB_AMP}" \
         --perturb_duration "${PERTURB_DUR}" \
