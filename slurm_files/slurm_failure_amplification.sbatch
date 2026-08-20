@@ -29,10 +29,10 @@ TEST_TSV=/scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/test.tsv
 CLIPS_DIR=/scratch/vemotionsys/rmfrieske/datasets/cv-corpus-22.0-2025-06-20/en/clips
 STRESS_MAX_SAMPLES="${STRESS_MAX_SAMPLES:-1000}"
 
-CLEAN_BASE=${ROOT}/failure_amplification_clean/per_utterance_base_ckpt10000_1000.csv
+OUT=${ROOT}/failure_amplification
+CLEAN_BASE=${OUT}/per_utterance_base_ckpt10000_1000.csv
 CLEAN_RR=${ROOT}/eval_64pct/per_utterance_rr_64pct_checkpoint-9375.csv
 CLEAN_RU=${ROOT}/eval_64pct/per_utterance_ru_64pct_checkpoint-9375.csv
-OUT=${ROOT}/failure_amplification
 mkdir -p "$OUT"
 
 echo "=== Failure amplification analysis ==="
