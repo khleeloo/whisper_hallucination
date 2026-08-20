@@ -25,9 +25,11 @@ from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+from transformers.models.whisper.english_normalizer import BasicTextNormalizer
 
 CONDITIONS = ["Base", "RR", "RU", "UR", "UU"]
 CV_RE = re.compile(r"(?:common_voice_en_\d+)", re.IGNORECASE)
+WHISPER_NORMALIZER = BasicTextNormalizer()
 
 # WAcc deliberately excluded. Historical files may contain it, but it is not read.
 METRIC_CANDIDATES = {
@@ -49,11 +51,15 @@ METRIC_CANDIDATES = {
 
 
 def normalize_text(value: object) -> str:
+    """Normalize references exactly as Whisper evaluation does.
+
+    Legacy stress TSV references were already passed through BasicTextNormalizer,
+    while test.tsv contains raw punctuation/contractions. Applying the same Whisper
+    normalizer to both sides makes provenance validation compare equivalent text.
+    """
     if value is None or (isinstance(value, float) and math.isnan(value)):
         return ""
-    text = str(value).lower()
-    text = re.sub(r"[^a-z0-9' ]+", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
+    return re.sub(r"\s+", " ", WHISPER_NORMALIZER(str(value))).strip()
 
 
 def canonical_condition(raw: str) -> str:
@@ -177,12 +183,14 @@ def frame_from_df(
                     "row": int(i),
                     "stress_reference": df.iloc[i]["reference"],
                     "manifest_reference": fallback_manifest.iloc[i]["reference_manifest"],
+                    "stress_normalized": stress_ref.iloc[i],
+                    "manifest_normalized": manifest_ref.iloc[i],
                 }
                 for i in idx
             ]
             raise ValueError(
                 f"Legacy stress row order does not match test.tsv for {source_file}; "
-                f"{int(mismatch.sum())}/{len(df)} reference mismatches. Examples={examples}"
+                f"{int(mismatch.sum())}/{len(df)} normalized reference mismatches. Examples={examples}"
             )
         print(f"ID source for {Path(source_file).name}: reconstructed from test.tsv row order")
 
