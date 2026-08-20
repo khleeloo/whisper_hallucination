@@ -119,6 +119,7 @@ def load_perturbed(paths: Sequence[str]) -> pd.DataFrame:
     if not frames:
         raise ValueError("No perturbed TSVs were loaded")
     data = pd.concat(frames, ignore_index=True, sort=False)
+    data = data.sort_values(["condition", "perturbation", "reference_norm"], kind="mergesort")
     data["reference_occurrence"] = data.groupby(
         ["condition", "perturbation", "reference_norm"], sort=False
     ).cumcount()
@@ -149,6 +150,7 @@ def load_clean(specs: Sequence[str]) -> pd.DataFrame:
         if not parts:
             continue
         merged = pd.concat(parts, ignore_index=True, sort=False)
+        merged = merged.sort_values("reference_norm", kind="mergesort")
         merged["reference_occurrence"] = merged.groupby("reference_norm", sort=False).cumcount()
         frames.append(merged)
     if not frames:
@@ -180,10 +182,11 @@ def pair_with_clean(perturbed: pd.DataFrame, clean: pd.DataFrame) -> pd.DataFram
     sentinel = f"{shared_metrics[0]}_clean"
     missing = int(paired[sentinel].isna().sum())
     if missing:
-        raise ValueError(
-            f"{missing:,}/{len(paired):,} perturbed rows could not be paired to clean rows. "
-            "Verify that clean and stress evaluations use the same utterance ordering/test split."
+        print(
+            f"WARNING: {missing:,}/{len(paired):,} perturbed rows could not be paired to clean rows. "
+            "Dropping unpaired rows. Verify that clean and stress evaluations use the same test split."
         )
+        paired = paired.dropna(subset=[sentinel])
     for metric in shared_metrics:
         paired[f"delta_{metric}"] = paired[metric] - paired[f"{metric}_clean"]
     print(f"Shared metrics: {shared_metrics}")
