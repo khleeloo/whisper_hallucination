@@ -25,11 +25,13 @@ mkdir -p slurm_logs
 ROOT=/scratch/vemotionsys/rmfrieske/whisper_hallucination
 STRESS_MAIN=${ROOT}/stress_eval_64pct
 STRESS_UR=${ROOT}/stress_eval_64pct_ur_checkpoint-10000
+TEST_TSV=/scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/test.tsv
+CLIPS_DIR=/scratch/vemotionsys/rmfrieske/datasets/cv-corpus-22.0-2025-06-20/en/clips
+STRESS_MAX_SAMPLES=1000
+
 CLEAN_BASE=${ROOT}/eval_validation/per_utterance_base_ckpt14000.csv
 CLEAN_RR=${ROOT}/eval_64pct/per_utterance_rr_64pct_checkpoint-9375.csv
 CLEAN_RU=${ROOT}/eval_64pct/per_utterance_ru_64pct_checkpoint-9375.csv
-CLEAN_UR_GLOB='${ROOT}/eval_64pct/per_utterance_ur_64pct_checkpoint-10000*.csv'
-CLEAN_UU_GLOB='${ROOT}/eval_64pct/per_utterance_uu_64pct_final*.csv'
 OUT=${ROOT}/failure_amplification
 mkdir -p "$OUT"
 
@@ -39,19 +41,19 @@ echo "Job ID: ${SLURM_JOB_ID:-unknown}"
 echo "Python: $(which python)"
 python --version
 
-# Required clean files/globs. UR and UU may be stored as shards.
-for f in "$CLEAN_BASE" "$CLEAN_RR" "$CLEAN_RU"; do
-    [[ -s "$f" ]] || { echo "ERROR: missing clean CSV: $f" >&2; exit 2; }
+for f in "$TEST_TSV" "$CLEAN_BASE" "$CLEAN_RR" "$CLEAN_RU"; do
+    [[ -s "$f" ]] || { echo "ERROR: missing required file: $f" >&2; exit 2; }
 done
+[[ -d "$CLIPS_DIR" ]] || { echo "ERROR: missing clips directory: $CLIPS_DIR" >&2; exit 2; }
 
 UR_COUNT=$(compgen -G "${ROOT}/eval_64pct/per_utterance_ur_64pct_checkpoint-10000*.csv" | wc -l || true)
 UU_COUNT=$(compgen -G "${ROOT}/eval_64pct/per_utterance_uu_64pct_final*.csv" | wc -l || true)
 MAIN_STRESS_COUNT=$(find "$STRESS_MAIN" -maxdepth 1 -type f -name 'details_*.tsv' 2>/dev/null | wc -l || true)
 UR_STRESS_COUNT=$(find "$STRESS_UR" -maxdepth 1 -type f -name 'details_*.tsv' 2>/dev/null | wc -l || true)
 
-echo "Clean Base: $CLEAN_BASE"
-echo "Clean RR:   $CLEAN_RR"
-echo "Clean RU:   $CLEAN_RU"
+echo "Test TSV: $TEST_TSV"
+echo "Clips: $CLIPS_DIR"
+echo "Stress max samples: $STRESS_MAX_SAMPLES"
 echo "Clean UR files: $UR_COUNT"
 echo "Clean UU files: $UU_COUNT"
 echo "Main stress TSVs: $MAIN_STRESS_COUNT"
@@ -68,14 +70,14 @@ ARGS=(
     --clean "RU=$CLEAN_RU"
     --clean "UR=${ROOT}/eval_64pct/per_utterance_ur_64pct_checkpoint-10000*.csv"
     --clean "UU=${ROOT}/eval_64pct/per_utterance_uu_64pct_final*.csv"
+    --test_tsv "$TEST_TSV"
+    --clips_dir "$CLIPS_DIR"
+    --stress_max_samples "$STRESS_MAX_SAMPLES"
     --output_dir "$OUT"
     --bootstrap 10000
     --seed 42
 )
 
-# The manuscript's canonical UR stress run uses checkpoint-10000 in its own directory.
-# Add it when present. The Python loader rejects duplicate condition/perturbation tags,
-# preventing accidental mixing of two UR checkpoints.
 if [[ "$UR_STRESS_COUNT" -gt 0 ]]; then
     ARGS+=(--perturbed_glob "$STRESS_UR/details_*.tsv")
 fi
