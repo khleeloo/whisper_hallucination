@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Test whether structured label noise amplifies intrinsic perturbation failures.
 
-Perturbed inputs are per-utterance ``details_*.tsv`` stress outputs. Clean baselines
-are per-utterance checkpoint CSVs. Rows are paired by the stable Common Voice clip ID
-(e.g. ``common_voice_en_27710027``), not transcript text or row order.
+Perturbed inputs are legacy/new ``details_*.tsv`` stress outputs. Clean baselines
+are per-utterance checkpoint CSVs. New stress files should contain an utterance ID;
+legacy stress files do not, so their IDs are reconstructed from the exact test.tsv
+order used by evaluate_dual_metric.py. WAcc is intentionally ignored everywhere.
 
 For metric m, condition c, perturbation p:
     delta[c,p,m] = mean(Y[c,p,m] - Y[c,clean,m])
@@ -13,9 +14,11 @@ For metric m, condition c, perturbation p:
 from __future__ import annotations
 
 import argparse
+import csv
 import glob
 import json
 import math
+import os
 import re
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
@@ -24,6 +27,9 @@ import numpy as np
 import pandas as pd
 
 CONDITIONS = ["Base", "RR", "RU", "UR", "UU"]
+CV_RE = re.compile(r"(?:common_voice_en_\d+)", re.IGNORECASE)
+
+# WAcc deliberately excluded. Historical files may contain it, but it is not read.
 METRIC_CANDIDATES = {
     "WER": ["wer", "WER"],
     "Hallucination": ["hallucination_like", "hallucination"],
@@ -38,10 +44,6 @@ METRIC_CANDIDATES = {
         "norm_plausibility",
     ],
 }
-ID_CANDIDATES = [
-    "utterance_id", "file_name", "filename", "path", "audio_path", "audio", "file", "id"
-]
-CV_RE = re.compile(r"(common_voice_en_\d+)", re.IGNORECASE)
 
 
 def normalize_text(value: object) -> str:
@@ -85,64 +87,115 @@ def find_metric_columns(df: pd.DataFrame) -> Dict[str, str]:
     return found
 
 
-def _extract_cv_id(value: object) -> str | None:
-    if pd.isna(value):
-        return None
+def extract_cv_id(value: object) -> str | None:
     m = CV_RE.search(str(value))
-    return m.group(1).lower() if m else None
+    return m.group(0).lower() if m else None
 
 
-def infer_utterance_ids(df: pd.DataFrame, source_file: str) -> pd.Series:
-    """Recover stable Common Voice IDs from a named ID/path column or by content scan."""
-    # Prefer conventional identifier/path columns.
-    for col in ID_CANDIDATES:
-        if col in df.columns:
-            ids = df[col].map(_extract_cv_id)
-            if ids.notna().mean() >= 0.95:
-                print(f"ID source for {Path(source_file).name}: column '{col}'")
-                return ids
-
-    # Some historical CSVs have different column names. Detect the column by values.
-    for col in df.columns:
-        if not (pd.api.types.is_object_dtype(df[col]) or pd.api.types.is_string_dtype(df[col])):
-            continue
-        sample = df[col].dropna().astype(str).head(200)
-        if sample.empty:
-            continue
-        rate = sample.str.contains(CV_RE, regex=True).mean()
+def infer_utterance_ids(df: pd.DataFrame, source_file: str) -> pd.Series | None:
+    """Return IDs from an explicit/id-like column, or None for legacy stress TSVs."""
+    preferred = [
+        "utterance_id", "audio_id", "clip_id", "path", "audio_path",
+        "filename", "file", "model_name",
+    ]
+    ordered = [c for c in preferred if c in df.columns] + [c for c in df.columns if c not in preferred]
+    for col in ordered:
+        sample = df[col].astype(str)
+        # Avoid pandas regex-group warnings by using a non-capturing regex string.
+        rate = sample.str.contains(r"(?:common_voice_en_\d+)", regex=True, na=False).mean()
         if rate >= 0.95:
-            print(f"ID source for {Path(source_file).name}: auto-detected column '{col}'")
-            return df[col].map(_extract_cv_id)
+            ids = sample.map(extract_cv_id)
+            if ids.notna().all():
+                print(f"ID source for {Path(source_file).name}: column '{col}'")
+                return ids.astype(str)
+    return None
 
-    raise ValueError(
-        f"Could not find Common Voice utterance IDs in {source_file}. Columns={list(df.columns)}"
-    )
+
+def build_test_manifest(test_tsv: str, clips_dir: str, max_samples: int | None) -> pd.DataFrame:
+    """Reproduce evaluate_dual_metric.load_test_data ordering exactly."""
+    rows = []
+    with open(test_tsv, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        for i, row in enumerate(reader):
+            if max_samples is not None and i >= max_samples:
+                break
+            audio_path = os.path.join(clips_dir, row["path"])
+            if not os.path.exists(audio_path):
+                continue
+            uid = extract_cv_id(row["path"])
+            if uid is None:
+                raise ValueError(f"Cannot recover Common Voice ID from test.tsv path: {row['path']}")
+            rows.append({
+                "utterance_id": uid,
+                "reference_manifest": row["sentence"],
+                "audio_path_manifest": audio_path,
+            })
+    manifest = pd.DataFrame(rows)
+    if manifest.empty:
+        raise ValueError(f"No usable rows reconstructed from {test_tsv}")
+    return manifest
 
 
-def frame_from_df(df: pd.DataFrame, condition: str, perturbation: str, source_file: str) -> pd.DataFrame:
+def frame_from_df(
+    df: pd.DataFrame,
+    condition: str,
+    perturbation: str,
+    source_file: str,
+    fallback_manifest: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     if "reference" not in df.columns:
         raise ValueError(f"{source_file} has no 'reference' column")
     metric_cols = find_metric_columns(df)
     if not metric_cols:
         raise ValueError(f"No recognized metrics in {source_file}; columns={list(df.columns)}")
 
+    ids = infer_utterance_ids(df, source_file)
+    if ids is None:
+        if fallback_manifest is None:
+            raise ValueError(
+                f"Could not find utterance IDs in {source_file} and no test manifest fallback was supplied. "
+                f"Columns={list(df.columns)}"
+            )
+        if len(df) != len(fallback_manifest):
+            raise ValueError(
+                f"Legacy stress file {source_file} has {len(df)} rows but reconstructed test manifest "
+                f"has {len(fallback_manifest)} rows. Check --stress_max_samples and test.tsv provenance."
+            )
+        # Legacy stress files were written in the exact order returned by load_test_data.
+        ids = fallback_manifest["utterance_id"].reset_index(drop=True)
+        stress_ref = df["reference"].map(normalize_text).reset_index(drop=True)
+        manifest_ref = fallback_manifest["reference_manifest"].map(normalize_text).reset_index(drop=True)
+        mismatch = stress_ref != manifest_ref
+        if mismatch.any():
+            idx = np.flatnonzero(mismatch.to_numpy())[:5]
+            examples = [
+                {
+                    "row": int(i),
+                    "stress_reference": df.iloc[i]["reference"],
+                    "manifest_reference": fallback_manifest.iloc[i]["reference_manifest"],
+                }
+                for i in idx
+            ]
+            raise ValueError(
+                f"Legacy stress row order does not match test.tsv for {source_file}; "
+                f"{int(mismatch.sum())}/{len(df)} reference mismatches. Examples={examples}"
+            )
+        print(f"ID source for {Path(source_file).name}: reconstructed from test.tsv row order")
+
     out = pd.DataFrame(index=np.arange(len(df)))
     out["condition"] = condition
     out["perturbation"] = perturbation
     out["source_file"] = source_file
     out["source_row"] = np.arange(len(df), dtype=int)
-    out["utterance_id"] = infer_utterance_ids(df, source_file)
-    out["reference"] = df["reference"].astype(str)
-    out["reference_norm"] = df["reference"].map(normalize_text)
-    if out["utterance_id"].isna().any():
-        n = int(out["utterance_id"].isna().sum())
-        raise ValueError(f"{n} rows in {source_file} have no recoverable Common Voice ID")
+    out["utterance_id"] = ids.astype(str).str.lower().to_numpy()
+    out["reference"] = df["reference"].astype(str).to_numpy()
+    out["reference_norm"] = df["reference"].map(normalize_text).to_numpy()
     for metric, col in metric_cols.items():
-        out[metric] = pd.to_numeric(df[col], errors="coerce")
+        out[metric] = pd.to_numeric(df[col], errors="coerce").to_numpy()
     return out
 
 
-def load_perturbed(paths: Sequence[str]) -> pd.DataFrame:
+def load_perturbed(paths: Sequence[str], manifest: pd.DataFrame | None) -> pd.DataFrame:
     frames: List[pd.DataFrame] = []
     seen = set()
     for path_str in sorted(set(paths)):
@@ -152,7 +205,8 @@ def load_perturbed(paths: Sequence[str]) -> pd.DataFrame:
         if key in seen:
             raise ValueError(f"Duplicate perturbed condition/tag {key}; do not mix checkpoints")
         seen.add(key)
-        frames.append(frame_from_df(pd.read_csv(path, sep="\t"), condition, perturbation, str(path)))
+        df = pd.read_csv(path, sep="\t")
+        frames.append(frame_from_df(df, condition, perturbation, str(path), fallback_manifest=manifest))
     if not frames:
         raise ValueError("No perturbed TSVs were loaded")
     return pd.concat(frames, ignore_index=True, sort=False)
@@ -166,68 +220,48 @@ def parse_clean_spec(spec: str) -> Tuple[str, str]:
 
 
 def load_clean(specs: Sequence[str]) -> pd.DataFrame:
-    per_condition: Dict[str, List[pd.DataFrame]] = {c: [] for c in CONDITIONS}
+    frames = []
     for spec in specs:
         condition, pattern = parse_clean_spec(spec)
         matches = sorted(glob.glob(pattern))
         if not matches:
             raise FileNotFoundError(f"No clean CSV matched {condition}={pattern}")
+        parts = []
         for path_str in matches:
-            per_condition[condition].append(
-                frame_from_df(pd.read_csv(path_str), condition, "none", path_str)
-            )
-
-    frames: List[pd.DataFrame] = []
-    for condition, parts in per_condition.items():
-        if not parts:
-            continue
+            df = pd.read_csv(path_str)
+            parts.append(frame_from_df(df, condition, "none", path_str))
         merged = pd.concat(parts, ignore_index=True, sort=False)
         if merged["utterance_id"].duplicated().any():
-            dup = merged.loc[merged["utterance_id"].duplicated(keep=False), "utterance_id"].head().tolist()
-            raise ValueError(f"Duplicate clean utterance IDs for {condition}: {dup}")
+            dups = merged.loc[merged.utterance_id.duplicated(keep=False), "utterance_id"].head().tolist()
+            raise ValueError(f"Duplicate clean utterance IDs for {condition}: {dups}")
         frames.append(merged)
-    if not frames:
-        raise ValueError("No clean CSVs were loaded")
     return pd.concat(frames, ignore_index=True, sort=False)
 
 
 def pair_with_clean(perturbed: pd.DataFrame, clean: pd.DataFrame) -> pd.DataFrame:
-    present = sorted(set(perturbed["condition"]))
-    missing_conditions = [c for c in present if c not in set(clean["condition"])]
-    if missing_conditions:
-        raise ValueError(f"Missing clean baseline for conditions: {missing_conditions}")
-
     shared_metrics = [m for m in METRIC_CANDIDATES if m in perturbed.columns and m in clean.columns]
     if not shared_metrics:
-        raise ValueError("Clean and perturbed files have no shared recognized metrics")
-
+        raise ValueError("Clean CSVs and perturbed TSVs have no shared recognized metrics")
     key = ["condition", "utterance_id"]
-    clean_cols = key + ["reference_norm"] + shared_metrics
-    clean_small = clean[clean_cols].copy().rename(
+    clean_small = clean[key + ["reference_norm"] + shared_metrics].copy()
+    clean_small = clean_small.rename(
         columns={"reference_norm": "reference_norm_clean", **{m: f"{m}_clean" for m in shared_metrics}}
     )
-    if clean_small.duplicated(key).any():
-        raise ValueError("Clean condition+utterance_id keys are not unique")
-
     paired = perturbed.merge(clean_small, on=key, how="left", validate="many_to_one")
     sentinel = f"{shared_metrics[0]}_clean"
-    missing = int(paired[sentinel].isna().sum())
-    if missing:
-        examples = paired.loc[paired[sentinel].isna(), ["condition", "utterance_id", "source_file"]].head(10)
+    missing = paired[sentinel].isna()
+    if missing.any():
+        examples = paired.loc[missing, ["condition", "utterance_id", "source_file"]].head().to_dict("records")
         raise ValueError(
-            f"{missing:,}/{len(paired):,} perturbed rows have no matching clean utterance ID.\n"
-            f"Examples:\n{examples.to_string(index=False)}"
+            f"{int(missing.sum()):,}/{len(paired):,} perturbed rows could not be paired by utterance ID. "
+            f"Examples={examples}"
         )
-
     ref_mismatch = paired["reference_norm"] != paired["reference_norm_clean"]
     if ref_mismatch.any():
-        n = int(ref_mismatch.sum())
-        examples = paired.loc[ref_mismatch, ["condition", "utterance_id", "reference_norm", "reference_norm_clean"]].head(5)
+        examples = paired.loc[ref_mismatch, ["condition", "utterance_id", "reference", "reference_norm_clean"]].head().to_dict("records")
         raise ValueError(
-            f"Utterance-ID pairing found {n} reference mismatches; refusing analysis.\n"
-            f"Examples:\n{examples.to_string(index=False)}"
+            f"{int(ref_mismatch.sum()):,}/{len(paired):,} paired rows have mismatching references. Examples={examples}"
         )
-
     for metric in shared_metrics:
         paired[f"delta_{metric}"] = paired[metric] - paired[f"{metric}_clean"]
     print(f"Paired all {len(paired):,} perturbed rows by Common Voice utterance ID")
@@ -238,12 +272,12 @@ def pair_with_clean(perturbed: pd.DataFrame, clean: pd.DataFrame) -> pd.DataFram
 def bootstrap_mean_ci(values: np.ndarray, n_boot: int, seed: int) -> Tuple[float, float]:
     x = np.asarray(values, dtype=float)
     x = x[np.isfinite(x)]
-    if x.size == 0:
+    if not len(x):
         return np.nan, np.nan
     rng = np.random.default_rng(seed)
-    means = np.empty(n_boot, dtype=float)
+    means = np.empty(n_boot)
     for i in range(n_boot):
-        means[i] = np.mean(x[rng.integers(0, x.size, size=x.size)])
+        means[i] = np.mean(x[rng.integers(0, len(x), len(x))])
     return tuple(np.quantile(means, [0.025, 0.975]).tolist())
 
 
@@ -253,9 +287,9 @@ def bootstrap_did_ci(noisy: np.ndarray, base: np.ndarray, n_boot: int, seed: int
     if not len(a) or not len(b):
         return np.nan, np.nan
     rng = np.random.default_rng(seed)
-    vals = np.empty(n_boot, dtype=float)
+    vals = np.empty(n_boot)
     for i in range(n_boot):
-        vals[i] = np.mean(a[rng.integers(0, len(a), size=len(a))]) - np.mean(b[rng.integers(0, len(b), size=len(b))])
+        vals[i] = np.mean(a[rng.integers(0, len(a), len(a))]) - np.mean(b[rng.integers(0, len(b), len(b))])
     return tuple(np.quantile(vals, [0.025, 0.975]).tolist())
 
 
@@ -288,31 +322,31 @@ def classify_effect(base_delta: float, noisy_delta: float, lo: float, hi: float,
 
 def difference_in_differences(paired: pd.DataFrame, summary: pd.DataFrame, n_boot: int, seed: int, eps: float) -> pd.DataFrame:
     rows = []
-    metrics = sorted(summary["metric"].unique())
-    perturbations = sorted(summary["perturbation"].unique())
-    for condition in [c for c in CONDITIONS if c != "Base" and c in set(paired["condition"])]:
-        for perturbation in perturbations:
-            for metric in metrics:
+    for condition in [c for c in CONDITIONS if c != "Base" and c in set(paired.condition)]:
+        for perturbation in sorted(summary.perturbation.unique()):
+            for metric in sorted(summary.metric.unique()):
                 col = f"delta_{metric}"
+                if col not in paired.columns:
+                    continue
                 base = pd.to_numeric(paired.loc[(paired.condition == "Base") & (paired.perturbation == perturbation), col], errors="coerce").dropna().to_numpy(float)
                 noisy = pd.to_numeric(paired.loc[(paired.condition == condition) & (paired.perturbation == perturbation), col], errors="coerce").dropna().to_numpy(float)
-                if not len(base) or not len(noisy): continue
+                if not len(base) or not len(noisy):
+                    continue
                 bmean, nmean = float(np.mean(base)), float(np.mean(noisy))
+                did = nmean - bmean
                 lo, hi = bootstrap_did_ci(noisy, base, n_boot, seed + len(rows))
                 ratio = nmean / bmean if abs(bmean) > eps and np.sign(bmean) == np.sign(nmean) else np.nan
                 rows.append({"condition": condition, "perturbation": perturbation, "metric": metric,
                              "base_delta": bmean, "noisy_delta": nmean,
-                             "difference_in_differences": nmean - bmean,
-                             "did_ci_low": lo, "did_ci_high": hi,
+                             "difference_in_differences": did, "did_ci_low": lo, "did_ci_high": hi,
                              "amplification_ratio": ratio,
                              "interpretation": classify_effect(bmean, nmean, lo, hi, eps)})
     return pd.DataFrame(rows)
 
 
 def spearman(x: np.ndarray, y: np.ndarray) -> float:
-    if len(x) < 2: return np.nan
-    rx = pd.Series(x).rank(method="average").to_numpy(float)
-    ry = pd.Series(y).rank(method="average").to_numpy(float)
+    if len(x) < 2 or len(y) < 2: return np.nan
+    rx = pd.Series(x).rank().to_numpy(float); ry = pd.Series(y).rank().to_numpy(float)
     if np.std(rx) == 0 or np.std(ry) == 0: return np.nan
     return float(np.corrcoef(rx, ry)[0, 1])
 
@@ -328,7 +362,7 @@ def ols(x: np.ndarray, y: np.ndarray) -> Tuple[float, float, float]:
     coef, *_ = np.linalg.lstsq(X, y, rcond=None)
     pred = X @ coef
     ss_res = float(np.sum((y - pred) ** 2)); ss_tot = float(np.sum((y - np.mean(y)) ** 2))
-    return float(coef[0]), float(coef[1]), (1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan)
+    return float(coef[0]), float(coef[1]), (1 - ss_res / ss_tot if ss_tot > 0 else np.nan)
 
 
 def signature_similarity(summary: pd.DataFrame) -> pd.DataFrame:
@@ -349,7 +383,7 @@ def signature_similarity(summary: pd.DataFrame) -> pd.DataFrame:
 
 
 def collect_globs(patterns: Sequence[str]) -> List[str]:
-    paths: List[str] = []
+    paths = []
     for pattern in patterns: paths.extend(glob.glob(pattern))
     return sorted(set(paths))
 
@@ -359,6 +393,9 @@ def main() -> None:
     p.add_argument("--perturbed_glob", action="append", default=[])
     p.add_argument("--details_glob", action="append", default=[], help="Alias for --perturbed_glob")
     p.add_argument("--clean", action="append", default=[], help="CONDITION=PATH_OR_GLOB")
+    p.add_argument("--test_tsv", default=None, help="Required for legacy stress TSVs without utterance IDs")
+    p.add_argument("--clips_dir", default=None, help="Required with --test_tsv")
+    p.add_argument("--stress_max_samples", type=int, default=None, help="Must match stress evaluation --max_samples")
     p.add_argument("--output_dir", default="results/failure_amplification")
     p.add_argument("--bootstrap", type=int, default=10000)
     p.add_argument("--seed", type=int, default=42)
@@ -366,13 +403,21 @@ def main() -> None:
     args = p.parse_args()
 
     perturbed_paths = collect_globs(args.perturbed_glob + args.details_glob)
-    if not perturbed_paths: raise FileNotFoundError("No perturbed detail TSVs matched")
+    if not perturbed_paths: raise FileNotFoundError("No perturbed details TSVs matched")
     if not args.clean: raise ValueError("At least one --clean CONDITION=PATH_OR_GLOB is required")
 
-    perturbed = load_perturbed(perturbed_paths)
+    manifest = None
+    if args.test_tsv or args.clips_dir:
+        if not args.test_tsv or not args.clips_dir:
+            raise ValueError("--test_tsv and --clips_dir must be provided together")
+        manifest = build_test_manifest(args.test_tsv, args.clips_dir, args.stress_max_samples)
+        print(f"Reconstructed stress manifest: {len(manifest):,} rows")
+
+    perturbed = load_perturbed(perturbed_paths, manifest)
     clean = load_clean(args.clean)
     print(f"Loaded perturbed rows: {len(perturbed):,} from {len(perturbed_paths)} files")
     print(f"Loaded clean rows: {len(clean):,}")
+
     paired = pair_with_clean(perturbed, clean)
     summary = summarize_deltas(paired, args.bootstrap, args.seed)
     did = difference_in_differences(paired, summary, args.bootstrap, args.seed, args.zero_epsilon)
@@ -383,20 +428,22 @@ def main() -> None:
     summary.to_csv(out / "perturbation_delta_summary.csv", index=False)
     did.to_csv(out / "difference_in_differences.csv", index=False)
     similarity.to_csv(out / "signature_similarity.csv", index=False)
-    counts = did.interpretation.value_counts().to_dict() if not did.empty else {}
-    payload = {"pairing_key": "condition + Common Voice utterance_id",
-               "interpretation_counts": {str(k): int(v) for k, v in counts.items()},
-               "n_paired_rows": int(len(paired)), "n_similarity_rows": int(len(similarity))}
+    payload = {
+        "decision_rule": {
+            "amplified": "Base delta > 0 and bootstrap 95% CI for DID entirely > 0",
+            "reproduced": "Base delta > 0 and bootstrap 95% CI for DID includes 0",
+            "attenuated": "Base delta > 0 and bootstrap 95% CI for DID entirely < 0",
+        },
+        "interpretation_counts": {str(k): int(v) for k, v in did.interpretation.value_counts().to_dict().items()} if not did.empty else {},
+        "n_paired_rows": int(len(paired)),
+        "wacc_used": False,
+    }
     (out / "hypothesis_check_summary.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     print("\n=== Failure amplification hypothesis check ===")
     print(f"Paired perturbed rows: {len(paired):,}")
     if not did.empty:
-        print("\nInterpretation counts:")
         print(did.interpretation.value_counts().to_string())
-        amp = did[did.interpretation == "amplified intrinsic failure"]
-        print("\nStrongest amplification candidates:")
-        print("  none under the pre-specified rule" if amp.empty else amp.sort_values("difference_in_differences", ascending=False).head(20).to_string(index=False))
     if not similarity.empty:
         print("\nSignature similarity / amplification slopes:")
         print(similarity.sort_values(["metric", "condition"]).to_string(index=False))
