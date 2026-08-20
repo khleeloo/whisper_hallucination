@@ -27,7 +27,7 @@ STRESS_MAIN=${ROOT}/stress_eval_64pct
 STRESS_UR=${ROOT}/stress_eval_64pct_ur_checkpoint-10000
 TEST_TSV=/scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/test.tsv
 CLIPS_DIR=/scratch/vemotionsys/rmfrieske/datasets/cv-corpus-22.0-2025-06-20/en/clips
-STRESS_MAX_SAMPLES=1000
+STRESS_MAX_SAMPLES="${STRESS_MAX_SAMPLES:-1000}"
 
 CLEAN_BASE=${ROOT}/eval_validation/per_utterance_base_ckpt14000.csv
 CLEAN_RR=${ROOT}/eval_64pct/per_utterance_rr_64pct_checkpoint-9375.csv
@@ -38,6 +38,7 @@ mkdir -p "$OUT"
 echo "=== Failure amplification analysis ==="
 echo "Host: $(hostname)"
 echo "Job ID: ${SLURM_JOB_ID:-unknown}"
+echo "Repo commit: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 echo "Python: $(which python)"
 python --version
 
@@ -58,6 +59,8 @@ echo "Clean UR files: $UR_COUNT"
 echo "Clean UU files: $UU_COUNT"
 echo "Main stress TSVs: $MAIN_STRESS_COUNT"
 echo "UR checkpoint-10000 stress TSVs: $UR_STRESS_COUNT"
+echo "Legacy stress TSVs without utterance IDs will be reconstructed from test.tsv order."
+echo "Historical WAcc columns are ignored by analyze_failure_amplification.py."
 
 [[ "$UR_COUNT" -gt 0 ]] || { echo "ERROR: no clean UR checkpoint-10000 CSVs found" >&2; exit 2; }
 [[ "$UU_COUNT" -gt 0 ]] || { echo "ERROR: no clean UU final CSVs found" >&2; exit 2; }
