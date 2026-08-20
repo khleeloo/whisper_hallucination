@@ -110,6 +110,14 @@ python -u analyze_failure_amplification_dual_lm.py \
     --bootstrap 10000 \
     --seed 42
 
+# Main acoustic experiment table: Base response under stress, with Qwen primary
+# and GPT2 reported in parallel, including paired 95% bootstrap confidence intervals.
+python -u summarize_base_acoustic_dual_lm.py \
+    --paired_csv "$OUT/paired_clean_to_perturbed_deltas.csv" \
+    --output_csv "$OUT/base_acoustic_hallucination_dual_lm_ci.csv" \
+    --bootstrap 10000 \
+    --seed 42
+
 echo ""
 echo "=== Outputs ==="
 ls -lh "$OUT"
