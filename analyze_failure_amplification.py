@@ -77,7 +77,7 @@ def parse_perturbed_filename(path: Path) -> Tuple[str, str]:
     low = stem.lower()
     m = re.search(
         r"(?:^|_)(base|clean|rr(?:_64pct)?|ru(?:_64pct)?|ur(?:_64pct)?|uu(?:_64pct)?)_"
-        r"(full_noise|onset_noise|reverb|silence|leading_silence|speech_band_noise)(.*)$",
+        r"(none|full_noise|onset_noise|reverb|silence|leading_silence|speech_band_noise)(.*)$",
         low,
     )
     if not m:
