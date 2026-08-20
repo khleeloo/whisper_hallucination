@@ -1,82 +1,89 @@
 #!/bin/bash
+#SBATCH --job-name=acoustic_full
+#SBATCH --partition=preempt
 #SBATCH --account=vemotionsys
-#SBATCH --job-name=stress_base
-#SBATCH --output=/home/rmfrieske/whisper_hallucination/slurm_logs/%j_stress_base.out
-#SBATCH --error=/home/rmfrieske/whisper_hallucination/slurm_logs/%j_stress_base.err
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=48G
-#SBATCH --time=06:00:00
-#SBATCH --partition=normal
+#SBATCH --time=24:00:00
+#SBATCH --mem=160G
+#SBATCH --output=/home/rmfrieske/whisper_hallucination/slurm_logs/%j_acoustic_full.out
+#SBATCH --error=/home/rmfrieske/whisper_hallucination/slurm_logs/%j_acoustic_full.err
 
 set -euo pipefail
 
-source /home/rmfrieske/.conda/envs/llama/etc/profile.d/conda.sh
+source /cm/shared/apps/Anaconda3/2023.09-0/etc/profile.d/conda.sh
 conda activate llama
 
+export OMP_NUM_THREADS=1
+export TOKENIZERS_PARALLELISM=false
+export PYTHONUNBUFFERED=1
+
 cd /home/rmfrieske/whisper_hallucination
+mkdir -p slurm_logs
 
-BASE_DIR="/scratch/vemotionsys/rmfrieske/whisper_hallucination"
-EVAL_PY="/home/rmfrieske/whisper_hallucination/evaluate_dual_metric.py"
-TSV="/scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/test.tsv"
-CLIPS="/scratch/vemotionsys/rmfrieske/datasets/cv-corpus-22.0-2025-06-20/en/clips"
-OUTDIR="${BASE_DIR}/stress_eval_64pct"
-MAX_SAMPLES="${MAX_SAMPLES:-1000}"
+ROOT=/scratch/vemotionsys/rmfrieske/whisper_hallucination
+MODEL_DIR=${ROOT}/base/checkpoint-10000
+TEST_TSV=/scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination/test.tsv
+CLIPS_DIR=/scratch/vemotionsys/rmfrieske/datasets/cv-corpus-22.0-2025-06-20/en/clips
+OUTDIR=${ROOT}/acoustic_stress_full
 
-CONFIG="base"
-MODEL_DIR="${BASE_DIR}/base/checkpoint-10000"
+mkdir -p "${OUTDIR}"
 
-PERTURB_TYPES=("full_noise" "full_noise" "onset_noise" "onset_noise" "reverb" "reverb")
-PERTURB_AMPS=("0.5" "0.75" "0.5" "0.75" "0.5" "0.8")
-PERTURB_DURS=("0.0" "0.0" "0.5" "0.5" "0.5" "0.5")
+echo "=== Canonical full acoustic-stress experiment ==="
+echo "Host: $(hostname)"
+echo "Job ID: ${SLURM_JOB_ID:-none}"
+echo "Repo commit: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+echo "Model: ${MODEL_DIR}"
+echo "Test TSV: ${TEST_TSV}"
+echo "Output: ${OUTDIR}"
+echo "N per condition: ${MAX_SAMPLES:-1000}"
+echo "LMs: Qwen/Qwen3-0.6B + GPT2"
+echo "Seed: ${SEED:-20260820}"
+echo
+echo "Battery:"
+echo "  clean"
+echo "  silence"
+echo "  leading silence: 1s, 3s"
+echo "  onset Gaussian noise: 0.05, 0.5, 0.75"
+echo "  reverb: 0.5, 0.8"
+echo "  speech-band noise: 0.5, 0.75"
+echo "  full-band Gaussian noise: 0.5, 0.75"
 
-mkdir -p "${OUTDIR}" /home/rmfrieske/whisper_hallucination/slurm_logs
-
-if [ ! -f "${MODEL_DIR}/adapter_config.json" ]; then
-    echo "ERROR: missing adapter_config.json for ${CONFIG}: ${MODEL_DIR}" >&2
+if [[ ! -f "${MODEL_DIR}/adapter_config.json" ]]; then
+    echo "ERROR: missing adapter_config.json in ${MODEL_DIR}" >&2
     exit 1
 fi
-if [ ! -f "${MODEL_DIR}/adapter_model.safetensors" ] && [ ! -f "${MODEL_DIR}/adapter_model.bin" ]; then
-    echo "ERROR: missing adapter weights for ${CONFIG}: ${MODEL_DIR}" >&2
+if [[ ! -f "${MODEL_DIR}/adapter_model.safetensors" && ! -f "${MODEL_DIR}/adapter_model.bin" ]]; then
+    echo "ERROR: missing adapter weights in ${MODEL_DIR}" >&2
     exit 1
 fi
+[[ -s "${TEST_TSV}" ]] || { echo "ERROR: missing test TSV: ${TEST_TSV}" >&2; exit 1; }
+[[ -d "${CLIPS_DIR}" ]] || { echo "ERROR: missing clips dir: ${CLIPS_DIR}" >&2; exit 1; }
 
-for IDX in "${!PERTURB_TYPES[@]}"; do
-    PERTURB_TYPE="${PERTURB_TYPES[$IDX]}"
-    PERTURB_AMP="${PERTURB_AMPS[$IDX]}"
-    PERTURB_DUR="${PERTURB_DURS[$IDX]}"
-    PERTURB_TAG="${PERTURB_TYPE}_amp${PERTURB_AMP}_dur${PERTURB_DUR}"
-    RESULTS_PATH="${OUTDIR}/results_${CONFIG}_${PERTURB_TAG}.json"
-    DETAILS_PATH="${OUTDIR}/details_${CONFIG}_${PERTURB_TAG}.tsv"
+EXTRA_ARGS=()
+if [[ "${REUSE_GENERATED:-0}" == "1" ]]; then
+    EXTRA_ARGS+=(--reuse_generated_outputs)
+fi
 
-    if [ -s "${RESULTS_PATH}" ] && [ -s "${DETAILS_PATH}" ]; then
-        echo "=== Skipping existing result: ${CONFIG} ${PERTURB_TAG} ==="
-        continue
-    fi
+python -u acoustic_stress_experiment.py \
+    --output_dir "${OUTDIR}" \
+    --test_tsv "${TEST_TSV}" \
+    --clips_dir "${CLIPS_DIR}" \
+    --base_model_dir "${MODEL_DIR}" \
+    --qwen_model Qwen/Qwen3-0.6B \
+    --gpt2_model gpt2 \
+    --max_samples "${MAX_SAMPLES:-1000}" \
+    --batch_size "${BATCH_SIZE:-8}" \
+    --lm_batch_size "${LM_BATCH_SIZE:-8}" \
+    --bootstrap "${N_BOOT:-10000}" \
+    --seed "${SEED:-20260820}" \
+    "${EXTRA_ARGS[@]}"
 
-    rm -f "${RESULTS_PATH}" "${DETAILS_PATH}"
-
-    echo "=== Base stress eval ==="
-    echo "Config: ${CONFIG}"
-    echo "Model: ${MODEL_DIR}"
-    echo "Perturbation: ${PERTURB_TYPE}, amp=${PERTURB_AMP}, dur=${PERTURB_DUR}"
-    echo "Perturbation tag: ${PERTURB_TAG}"
-    echo "Max samples: ${MAX_SAMPLES}"
-    echo "LMs: GPT2 + Qwen3-0.6B"
-    echo "Output: ${OUTDIR}"
-
-    python "${EVAL_PY}" \
-        --model_dir "${MODEL_DIR}" \
-        --base_model openai/whisper-large-v3 \
-        --test_tsv "${TSV}" \
-        --clips_dir "${CLIPS}" \
-        --output_dir "${OUTDIR}" \
-        --config_name "${CONFIG}" \
-        --max_samples "${MAX_SAMPLES}" \
-        --batch_size 8 \
-        --lm_models gpt2 Qwen/Qwen3-0.6B \
-        --perturb_type "${PERTURB_TYPE}" \
-        --perturb_amplitude "${PERTURB_AMP}" \
-        --perturb_duration "${PERTURB_DUR}" \
-        --num_log_examples 5
-done
+echo
+echo "=== Full acoustic-stress experiment complete ==="
+echo "Per utterance: ${OUTDIR}/per_utterance_acoustic_stress.csv"
+echo "Summary:       ${OUTDIR}/acoustic_stress_summary.csv"
+echo "Top outputs:   ${OUTDIR}/top_hypotheses_by_condition.csv"
+echo "Thresholds:    ${OUTDIR}/matched_clean_dual_lm_thresholds.json"
+echo "Report:        ${OUTDIR}/report.json"
