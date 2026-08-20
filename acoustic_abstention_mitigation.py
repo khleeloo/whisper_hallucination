@@ -1,33 +1,42 @@
 #!/usr/bin/env python3
 """Hallucination mitigation experiment: acoustic-consistency abstention.
 
-This experiment is deliberately a *pipeline validation*, not a claim of a novel
-mitigation algorithm. It uses an independent wav2vec2-CTC model as a
-reference-free acoustic-support gate:
+This is a pipeline-validation experiment, not a claim of a novel mitigation
+algorithm. The diagnostic pipeline first scores every Whisper hypothesis with
+WER plus both language-model plausibility metrics used throughout the paper:
+Qwen3-0.6B (primary) and GPT-2 (parallel robustness check). Hallucination-like
+labels are defined separately for each LM using thresholds estimated from the
+clean Base DEV outputs:
 
-    accept Whisper hypothesis iff normalized CTC NLL(x, hypothesis) <= tau
+    H_Qwen = [WER > mean_DEV(WER)] AND [Qwen > mean_DEV(Qwen)]
+    H_GPT2 = [WER > mean_DEV(WER)] AND [GPT2 > mean_DEV(GPT2)]
+
+The mitigation itself is reference-free and LM-free at inference time. It
+abstains when an independent wav2vec2-CTC model assigns insufficient acoustic
+support to the Whisper hypothesis:
+
+    accept iff normalized CTC NLL(x, hypothesis) <= tau.
 
 Protocol
 --------
-1. Generate Base checkpoint-10000 outputs on a disjoint DEV split under:
+1. Generate Base checkpoint-10000 outputs on disjoint DEV and TEST splits under
    clean, full-noise 0.5, and full-noise 0.75.
-2. Label hallucination-like DEV outputs with the frozen matched-Base
-   WER + GPT-2 plausibility criterion.
-3. Select one global CTC-support threshold tau on DEV. Among thresholds that
-   retain at least --min_clean_coverage of clean DEV outputs, choose the one
-   that rejects the largest fraction of hallucination-like stressed outputs.
-4. Freeze tau.
-5. Apply exactly the same gate to held-out TEST clean and stressed outputs.
-6. Report coverage, emitted hallucination incidence, residual hallucination
-   rate among accepted outputs, hallucination capture recall, and accepted WER.
+2. Score all outputs with WER, Qwen3-0.6B plausibility, and GPT-2 plausibility.
+3. Derive the shared WER threshold and both LM plausibility thresholds from
+   clean Base DEV only, then freeze them for TEST.
+4. Select one global CTC threshold tau on DEV. Qwen3 is the primary
+   hallucination label, matching the established evaluation pipeline; GPT-2 is
+   reported in parallel as an independent LM robustness check.
+5. Freeze tau and apply it unchanged to held-out TEST clean and stressed audio.
+6. Report coverage, hallucination incidence before/after abstention, capture
+   recall, accepted-output WER, and paired bootstrap CIs for both LM labels.
 
 Important:
-- The gate itself never uses the reference transcription or an LM score at test
-  time. References/LM scores are used only for evaluation labels.
-- The same deterministic perturbation realization is reconstructed for Whisper
-  decoding and wav2vec2 scoring. This avoids the stochastic-noise mismatch in
-  legacy stress files.
-- wav2vec2 is the mitigation signal, so grounding-gap improvement is *not* used
+- References and LM scores are evaluation-only; the gate does not use them at
+  test time.
+- Noise is deterministic per utterance so Whisper and wav2vec2 score exactly the
+  same perturbed waveform.
+- wav2vec2 is the mitigation signal, so grounding-gap improvement is not used
   as a mitigation outcome (that would be circular).
 """
 
@@ -51,14 +60,15 @@ from acoustic_grounding_validation import (
     Wav2Vec2CtcScorer,
     normalize_wav2vec2_text,
 )
+from evaluate_whisper_validation import compute_wer_metrics
 from mitigation_experiment import (
     DEFAULT_BASE_MODEL,
     DEFAULT_GPT2_MODEL,
+    DEFAULT_QWEN_MODEL,
     _default_lm_plausibility,
     _load_whisper_model,
     parse_perturbation,
 )
-from evaluate_whisper_validation import compute_wer_metrics
 
 SCRATCH_ROOT = Path("/scratch/vemotionsys/rmfrieske/whisper_hallucination")
 DATA_ROOT = Path("/scratch/vemotionsys/rmfrieske/datasets/whisper_hallucination")
@@ -68,10 +78,6 @@ DEFAULT_TEST_TSV = DATA_ROOT / "test.tsv"
 DEFAULT_CLIPS_DIR = CV_ROOT / "clips"
 DEFAULT_BASE_MODEL_DIR = SCRATCH_ROOT / "base" / "checkpoint-10000"
 DEFAULT_OUTPUT_DIR = SCRATCH_ROOT / "hallucination_mitigation_acoustic"
-
-# Frozen from the checkpoint-matched Base clean 1000-utterance evaluation.
-DEFAULT_HALL_WER_THRESHOLD = 0.116215
-DEFAULT_HALL_PLAUS_THRESHOLD = 0.892170
 
 DEFAULT_PERTURBATIONS = [
     "none",
@@ -124,12 +130,13 @@ def load_manifest(
     split: str,
     max_samples: Optional[int],
 ) -> pd.DataFrame:
-    """Reproduce legacy max_samples semantics: truncate TSV rows before file filtering."""
+    """Load Common Voice rows; truncate TSV before missing-file filtering."""
     rows: List[Dict[str, object]] = []
     with tsv_path.open("r", encoding="utf-8") as handle:
         reader = csv.DictReader(handle, delimiter="\t")
-        if not reader.fieldnames or "path" not in reader.fieldnames or "sentence" not in reader.fieldnames:
-            raise ValueError(f"Expected Common Voice columns 'path' and 'sentence' in {tsv_path}")
+        required = {"path", "sentence"}
+        if not reader.fieldnames or not required.issubset(reader.fieldnames):
+            raise ValueError(f"Expected Common Voice columns {sorted(required)} in {tsv_path}")
         for idx, row in enumerate(reader):
             if max_samples is not None and idx >= max_samples:
                 break
@@ -170,7 +177,7 @@ def deterministic_perturb(
     *,
     seed: int,
 ) -> torch.Tensor:
-    """Mirror project perturbations but make stochastic noise exactly reproducible."""
+    """Apply project perturbations with deterministic stochastic noise."""
     p = parse_perturbation(label)
     perturb_type = p.perturb_type
     amplitude = float(p.amplitude)
@@ -178,36 +185,47 @@ def deterministic_perturb(
 
     if perturb_type == "none":
         out = waveform
-    elif perturb_type == "onset_noise":
-        n_samples = min(int(duration * sample_rate), waveform.shape[-1])
+    elif perturb_type in {"onset_noise", "full_noise", "speech_band_noise"}:
         gen = torch.Generator(device=waveform.device)
         gen.manual_seed(seed)
-        noise = torch.randn(
-            waveform[..., :n_samples].shape,
-            dtype=waveform.dtype,
-            device=waveform.device,
-            generator=gen,
-        ) * amplitude
-        out = waveform.clone()
-        out[..., :n_samples] = out[..., :n_samples] + noise
-    elif perturb_type == "full_noise":
-        gen = torch.Generator(device=waveform.device)
-        gen.manual_seed(seed)
-        noise = torch.randn(
-            waveform.shape,
-            dtype=waveform.dtype,
-            device=waveform.device,
-            generator=gen,
-        ) * amplitude
-        out = waveform + noise
+        if perturb_type == "onset_noise":
+            n_samples = min(int(duration * sample_rate), waveform.shape[-1])
+            noise = torch.randn(
+                waveform[..., :n_samples].shape,
+                dtype=waveform.dtype,
+                device=waveform.device,
+                generator=gen,
+            ) * amplitude
+            out = waveform.clone()
+            out[..., :n_samples] = out[..., :n_samples] + noise
+        elif perturb_type == "full_noise":
+            noise = torch.randn(
+                waveform.shape,
+                dtype=waveform.dtype,
+                device=waveform.device,
+                generator=gen,
+            ) * amplitude
+            out = waveform + noise
+        else:
+            noise = torch.randn(
+                waveform.shape,
+                dtype=waveform.dtype,
+                device=waveform.device,
+                generator=gen,
+            )
+            spectrum = torch.fft.rfft(noise, dim=-1)
+            freqs = torch.fft.rfftfreq(noise.shape[-1], d=1.0 / sample_rate).to(noise.device)
+            mask = ((freqs >= 300.0) & (freqs <= 3400.0)).to(spectrum.dtype)
+            filtered = torch.fft.irfft(spectrum * mask, n=noise.shape[-1], dim=-1)
+            filtered = filtered / (filtered.pow(2).mean().sqrt() + 1e-8)
+            signal_rms = waveform.pow(2).mean().sqrt().clamp_min(1e-4)
+            out = waveform + filtered * signal_rms * amplitude
     elif perturb_type == "reverb":
         strength = max(0.0, amplitude)
         delay_samples = max(1, int(0.035 * sample_rate))
         tail_seconds = duration if duration > 0 else 0.45
         tail_samples = max(delay_samples + 1, int(tail_seconds * sample_rate))
-        impulse = torch.zeros(
-            1, 1, tail_samples, dtype=waveform.dtype, device=waveform.device
-        )
+        impulse = torch.zeros(1, 1, tail_samples, dtype=waveform.dtype, device=waveform.device)
         impulse[..., 0] = 1.0
         tap = delay_samples
         tap_idx = 1
@@ -232,22 +250,6 @@ def deterministic_perturb(
             device=waveform.device,
         )
         out = torch.cat([silence, waveform], dim=-1)
-    elif perturb_type == "speech_band_noise":
-        gen = torch.Generator(device=waveform.device)
-        gen.manual_seed(seed)
-        noise = torch.randn(
-            waveform.shape,
-            dtype=waveform.dtype,
-            device=waveform.device,
-            generator=gen,
-        )
-        spectrum = torch.fft.rfft(noise, dim=-1)
-        freqs = torch.fft.rfftfreq(noise.shape[-1], d=1.0 / sample_rate).to(noise.device)
-        mask = ((freqs >= 300.0) & (freqs <= 3400.0)).to(spectrum.dtype)
-        filtered = torch.fft.irfft(spectrum * mask, n=noise.shape[-1], dim=-1)
-        filtered = filtered / (filtered.pow(2).mean().sqrt() + 1e-8)
-        signal_rms = waveform.pow(2).mean().sqrt().clamp_min(1e-4)
-        out = waveform + filtered * signal_rms * amplitude
     else:
         raise ValueError(f"Unsupported perturbation: {label}")
 
@@ -262,8 +264,6 @@ def load_exact_waveform(row: object, label: str, *, base_seed: int) -> np.ndarra
         waveform = waveform.mean(dim=0, keepdim=True)
     seed = stable_seed(base_seed, row.split, row.utterance_id, label)
     waveform = deterministic_perturb(waveform, 16000, label, seed=seed)
-    if waveform.shape[0] > 1:
-        waveform = waveform.mean(dim=0, keepdim=True)
     return waveform.squeeze(0).detach().cpu().float().numpy()
 
 
@@ -283,10 +283,7 @@ def decode_manifest(
 
     for start in range(0, len(records), batch_size):
         batch = records[start : start + batch_size]
-        waveforms = [
-            load_exact_waveform(row, perturbation, base_seed=base_seed)
-            for row in batch
-        ]
+        waveforms = [load_exact_waveform(row, perturbation, base_seed=base_seed) for row in batch]
         inputs = processor.feature_extractor(
             waveforms,
             sampling_rate=16000,
@@ -295,7 +292,6 @@ def decode_manifest(
             return_attention_mask=True,
         ).to(device)
         inputs["input_features"] = inputs["input_features"].to(dtype=model_dtype)
-
         with torch.inference_mode():
             ids = model.generate(
                 inputs["input_features"],
@@ -305,14 +301,9 @@ def decode_manifest(
                 task="transcribe",
             )
         hypotheses.extend(processor.tokenizer.batch_decode(ids, skip_special_tokens=True))
-
         done = min(start + len(batch), len(records))
         if start == 0 or done == len(records) or (start // batch_size) % 10 == 0:
-            print(
-                f"  {manifest.iloc[0]['split']} {perturbation}: "
-                f"transcribed {done}/{len(records)}",
-                flush=True,
-            )
+            print(f"  {manifest.iloc[0]['split']} {perturbation}: transcribed {done}/{len(records)}", flush=True)
 
     out = manifest[["split", "utterance_id", "audio_path", "reference"]].copy()
     out["perturbation"] = perturbation
@@ -320,48 +311,78 @@ def decode_manifest(
     return out[GENERATED_COLUMNS]
 
 
-def add_evaluation_labels(
+def add_dual_lm_scores(
     df: pd.DataFrame,
     *,
     device: str,
+    qwen_model: str,
     gpt2_model: str,
     lm_batch_size: int,
-    wer_threshold: float,
-    plaus_threshold: float,
 ) -> pd.DataFrame:
+    """Compute WER plus both paper LM plausibility scores for every output."""
     out = df.copy()
-    wer_rows = compute_wer_metrics(
-        out["hypothesis"].tolist(),
-        out["reference"].tolist(),
-    )
+    wer_rows = compute_wer_metrics(out["hypothesis"].tolist(), out["reference"].tolist())
     out["WER"] = [float(row["wer"]) for row in wer_rows]
-    print(f"Scoring {len(out):,} hypotheses with {gpt2_model}...", flush=True)
-    out["gpt2_plaus"] = list(
-        _default_lm_plausibility(
-            out["hypothesis"].tolist(),
-            out["reference"].tolist(),
-            gpt2_model,
-            device,
-            lm_batch_size,
+
+    for column, model_name in [("qwen_plaus", qwen_model), ("gpt2_plaus", gpt2_model)]:
+        print(f"Scoring {len(out):,} hypotheses with {model_name}...", flush=True)
+        out[column] = list(
+            _default_lm_plausibility(
+                out["hypothesis"].tolist(),
+                out["reference"].tolist(),
+                model_name,
+                device,
+                lm_batch_size,
+            )
         )
+    return out
+
+
+def derive_hallucination_thresholds(
+    scored: pd.DataFrame,
+    *,
+    wer_override: Optional[float] = None,
+    qwen_override: Optional[float] = None,
+    gpt2_override: Optional[float] = None,
+) -> Dict[str, float]:
+    """Freeze WER/Qwen/GPT2 thresholds from clean Base DEV only."""
+    clean_dev = scored[(scored["split"] == "dev") & (scored["perturbation"] == "none")].copy()
+    if clean_dev.empty:
+        raise ValueError("Cannot derive hallucination thresholds: clean DEV outputs are missing")
+    return {
+        "wer_threshold": float(wer_override) if wer_override is not None else float(clean_dev["WER"].mean()),
+        "qwen_plausibility_threshold": (
+            float(qwen_override) if qwen_override is not None else float(clean_dev["qwen_plaus"].mean())
+        ),
+        "gpt2_plausibility_threshold": (
+            float(gpt2_override) if gpt2_override is not None else float(clean_dev["gpt2_plaus"].mean())
+        ),
+        "N_clean_dev": int(len(clean_dev)),
+    }
+
+
+def apply_hallucination_labels(df: pd.DataFrame, thresholds: Dict[str, float]) -> pd.DataFrame:
+    """Apply Qwen-primary and GPT2-robustness hallucination-like labels."""
+    out = df.copy()
+    high_wer = out["WER"].astype(float) > float(thresholds["wer_threshold"])
+    out["hallucination_like_qwen"] = high_wer & (
+        out["qwen_plaus"].astype(float) > float(thresholds["qwen_plausibility_threshold"])
     )
-    out["hallucination_like"] = (
-        (out["WER"].astype(float) > float(wer_threshold))
-        & (out["gpt2_plaus"].astype(float) > float(plaus_threshold))
+    out["hallucination_like_gpt2"] = high_wer & (
+        out["gpt2_plaus"].astype(float) > float(thresholds["gpt2_plausibility_threshold"])
+    )
+    # Established pipeline convention: Qwen3-0.6B is primary; GPT2 is reported
+    # in parallel as the LM robustness check.
+    out["hallucination_like"] = out["hallucination_like_qwen"]
+    out["hallucination_lm_agreement"] = (
+        out["hallucination_like_qwen"] == out["hallucination_like_gpt2"]
     )
     return out
 
 
 def ctc_cache_key(row: object, model_name: str, base_seed: int) -> str:
     payload = "||".join(
-        [
-            str(base_seed),
-            str(row.split),
-            str(row.utterance_id),
-            str(row.perturbation),
-            str(row.hypothesis),
-            model_name,
-        ]
+        [str(base_seed), str(row.split), str(row.utterance_id), str(row.perturbation), str(row.hypothesis), model_name]
     )
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
@@ -372,10 +393,9 @@ def load_ctc_cache(path: Path) -> Dict[str, float]:
     cache: Dict[str, float] = {}
     with path.open("r", encoding="utf-8") as handle:
         for line in handle:
-            if not line.strip():
-                continue
-            item = json.loads(line)
-            cache[str(item["key"])] = float(item["normalized_ctc_nll"])
+            if line.strip():
+                item = json.loads(line)
+                cache[str(item["key"])] = float(item["normalized_ctc_nll"])
     return cache
 
 
@@ -394,11 +414,8 @@ def normalized_ctc_nll_batch(
     audios: Sequence[np.ndarray],
     texts: Sequence[str],
 ) -> List[float]:
-    """Per-utterance CTC NLL/token. Impossible alignments remain +inf."""
-    normalized_texts = [
-        normalize_wav2vec2_text(scorer.processor.tokenizer, str(text))
-        for text in texts
-    ]
+    """Compute per-utterance wav2vec2 CTC NLL/token."""
+    normalized_texts = [normalize_wav2vec2_text(scorer.processor.tokenizer, str(text)) for text in texts]
     label_lists: List[List[int]] = []
     for text in normalized_texts:
         ids = scorer.processor.tokenizer(text).input_ids
@@ -411,27 +428,13 @@ def normalized_ctc_nll_batch(
         return scores
 
     subset_audio = [audios[i] for i in nonempty]
-    inputs = scorer.processor(
-        subset_audio,
-        sampling_rate=16000,
-        return_tensors="pt",
-        padding=True,
-    )
-    input_values = inputs.input_values.to(
-        device=scorer.device,
-        dtype=scorer.model_dtype,
-    )
+    inputs = scorer.processor(subset_audio, sampling_rate=16000, return_tensors="pt", padding=True)
+    input_values = inputs.input_values.to(device=scorer.device, dtype=scorer.model_dtype)
     attention_mask = getattr(inputs, "attention_mask", None)
     if attention_mask is None:
-        raw_lengths = torch.tensor(
-            [len(a) for a in subset_audio],
-            dtype=torch.long,
-            device=scorer.device,
-        )
+        raw_lengths = torch.tensor([len(a) for a in subset_audio], dtype=torch.long, device=scorer.device)
     else:
-        raw_lengths = attention_mask.sum(-1).to(
-            device=scorer.device, dtype=torch.long
-        )
+        raw_lengths = attention_mask.sum(-1).to(device=scorer.device, dtype=torch.long)
 
     with torch.inference_mode():
         logits = scorer.model(input_values).logits.float()
@@ -449,23 +452,14 @@ def normalized_ctc_nll_batch(
         )
 
     target_lengths = torch.tensor(
-        [len(label_lists[i]) for i in nonempty],
-        dtype=torch.long,
-        device=scorer.device,
+        [len(label_lists[i]) for i in nonempty], dtype=torch.long, device=scorer.device
     )
     max_target = int(target_lengths.max().item())
     targets = torch.full(
-        (len(nonempty), max_target),
-        int(scorer.blank_id),
-        dtype=torch.long,
-        device=scorer.device,
+        (len(nonempty), max_target), int(scorer.blank_id), dtype=torch.long, device=scorer.device
     )
     for j, original_idx in enumerate(nonempty):
-        ids = torch.tensor(
-            label_lists[original_idx],
-            dtype=torch.long,
-            device=scorer.device,
-        )
+        ids = torch.tensor(label_lists[original_idx], dtype=torch.long, device=scorer.device)
         targets[j, : len(ids)] = ids
 
     losses = torch.nn.functional.ctc_loss(
@@ -497,7 +491,6 @@ def score_ctc_support(
     cache = load_ctc_cache(cache_path)
     scorer = Wav2Vec2CtcScorer(wav2vec2_model, device=device)
     scores = np.full(len(out), np.nan, dtype=float)
-
     rows = list(out.itertuples(index=False))
     pending: List[int] = []
     keys: List[str] = []
@@ -509,24 +502,12 @@ def score_ctc_support(
         else:
             pending.append(idx)
 
-    print(
-        f"wav2vec2 support: {len(out)-len(pending):,} cached, "
-        f"{len(pending):,} to score",
-        flush=True,
-    )
-
+    print(f"wav2vec2 support: {len(out)-len(pending):,} cached, {len(pending):,} to score", flush=True)
     for start in range(0, len(pending), batch_size):
         indices = pending[start : start + batch_size]
         batch_rows = [rows[i] for i in indices]
-        audios = [
-            load_exact_waveform(row, row.perturbation, base_seed=base_seed)
-            for row in batch_rows
-        ]
-        batch_scores = normalized_ctc_nll_batch(
-            scorer,
-            audios,
-            [row.hypothesis for row in batch_rows],
-        )
+        audios = [load_exact_waveform(row, row.perturbation, base_seed=base_seed) for row in batch_rows]
+        batch_scores = normalized_ctc_nll_batch(scorer, audios, [row.hypothesis for row in batch_rows])
         cache_rows: List[Dict[str, object]] = []
         for idx, row, score in zip(indices, batch_rows, batch_scores):
             scores[idx] = score
@@ -558,55 +539,47 @@ def accepted_mask(scores: Sequence[float], threshold: float) -> np.ndarray:
     return np.isfinite(values) & (values <= float(threshold))
 
 
-def select_gate_threshold(
-    dev: pd.DataFrame,
-    *,
-    min_clean_coverage: float,
-) -> Tuple[float, pd.DataFrame]:
+def select_gate_threshold(dev: pd.DataFrame, *, min_clean_coverage: float) -> Tuple[float, pd.DataFrame]:
+    """Tune tau on Qwen-primary hallucination labels, with GPT2 diagnostics."""
     clean = dev[dev["perturbation"] == "none"].copy()
     stress = dev[dev["perturbation"] != "none"].copy()
     if clean.empty or stress.empty:
         raise ValueError("DEV must contain clean and at least one stressed perturbation")
 
     finite_clean = np.sort(
-        clean.loc[np.isfinite(clean["ctc_support_nll"]), "ctc_support_nll"]
-        .astype(float)
-        .unique()
+        clean.loc[np.isfinite(clean["ctc_support_nll"]), "ctc_support_nll"].astype(float).unique()
     )
     if len(finite_clean) == 0:
         raise ValueError("No finite clean DEV CTC scores; cannot select gate threshold")
 
+    qwen_hall = stress["hallucination_like_qwen"].astype(bool).to_numpy()
+    gpt2_hall = stress["hallucination_like_gpt2"].astype(bool).to_numpy()
     records: List[Dict[str, object]] = []
-    stress_hall = stress["hallucination_like"].astype(bool).to_numpy()
-    n_stress_hall = int(stress_hall.sum())
-
     for tau in finite_clean:
         clean_accept = accepted_mask(clean["ctc_support_nll"], tau)
         clean_coverage = float(clean_accept.mean())
         if clean_coverage + 1e-12 < min_clean_coverage:
             continue
-
         stress_accept = accepted_mask(stress["ctc_support_nll"], tau)
-        rejected_hall = int((~stress_accept & stress_hall).sum())
-        accepted_hall = int((stress_accept & stress_hall).sum())
+
+        def recall(hall: np.ndarray) -> float:
+            n = int(hall.sum())
+            return float((~stress_accept & hall).sum() / n) if n else 0.0
+
+        qwen_accept_hall = int((stress_accept & qwen_hall).sum())
+        gpt2_accept_hall = int((stress_accept & gpt2_hall).sum())
         records.append(
             {
                 "threshold": float(tau),
                 "clean_coverage": clean_coverage,
                 "clean_rejection_rate": 1.0 - clean_coverage,
                 "stress_coverage": float(stress_accept.mean()),
-                "stress_hallucinations": n_stress_hall,
-                "stress_hallucination_capture_recall": (
-                    rejected_hall / n_stress_hall if n_stress_hall else 0.0
-                ),
-                "stress_emitted_hallucination_incidence": float(
-                    accepted_hall / len(stress)
-                ),
-                "stress_residual_hallucination_among_accepted": (
-                    accepted_hall / int(stress_accept.sum())
-                    if int(stress_accept.sum())
-                    else 0.0
-                ),
+                "stress_hallucinations_qwen": int(qwen_hall.sum()),
+                "stress_hallucination_capture_recall_qwen": recall(qwen_hall),
+                "stress_emitted_hallucination_incidence_qwen": float(qwen_accept_hall / len(stress)),
+                "stress_hallucinations_gpt2": int(gpt2_hall.sum()),
+                "stress_hallucination_capture_recall_gpt2": recall(gpt2_hall),
+                "stress_emitted_hallucination_incidence_gpt2": float(gpt2_accept_hall / len(stress)),
             }
         )
 
@@ -616,14 +589,8 @@ def select_gate_threshold(
             "This can happen if too many clean CTC scores are non-finite."
         )
 
-    table = pd.DataFrame(records)
-    table = table.sort_values(
-        [
-            "stress_hallucination_capture_recall",
-            "stress_coverage",
-            "clean_coverage",
-            "threshold",
-        ],
+    table = pd.DataFrame(records).sort_values(
+        ["stress_hallucination_capture_recall_qwen", "stress_coverage", "clean_coverage", "threshold"],
         ascending=[False, False, False, False],
     ).reset_index(drop=True)
     return float(table.iloc[0]["threshold"]), table
@@ -651,6 +618,33 @@ def bootstrap_delta_incidence(
     return point, float(lo), float(hi)
 
 
+def _hall_summary(
+    hall: np.ndarray,
+    accept: np.ndarray,
+    *,
+    n_boot: int,
+    seed: int,
+    suffix: str,
+) -> Dict[str, object]:
+    emitted = hall & accept
+    n_accept = int(accept.sum())
+    n_hall = int(hall.sum())
+    delta, lo, hi = bootstrap_delta_incidence(hall, accept, n_boot=n_boot, seed=seed)
+    return {
+        f"hallucination_rate_before_{suffix}": float(hall.mean()),
+        f"emitted_hallucination_incidence_{suffix}": float(emitted.mean()),
+        f"residual_hallucination_among_accepted_{suffix}": (
+            float(emitted.sum() / n_accept) if n_accept else 0.0
+        ),
+        f"hallucination_capture_recall_{suffix}": (
+            float((hall & ~accept).sum() / n_hall) if n_hall else 0.0
+        ),
+        f"delta_emitted_hallucination_incidence_{suffix}": delta,
+        f"delta_CI_low_{suffix}": lo,
+        f"delta_CI_high_{suffix}": hi,
+    }
+
+
 def summarize_group(
     group: pd.DataFrame,
     *,
@@ -658,45 +652,51 @@ def summarize_group(
     n_boot: int,
     seed: int,
 ) -> Dict[str, object]:
-    hall = group["hallucination_like"].astype(bool).to_numpy()
     accept = accepted_mask(group["ctc_support_nll"], threshold)
-    emitted_hall = hall & accept
-    n_accept = int(accept.sum())
-    n_hall = int(hall.sum())
-    delta, ci_lo, ci_hi = bootstrap_delta_incidence(
-        hall, accept, n_boot=n_boot, seed=seed
-    )
+    qwen_hall = group.get("hallucination_like_qwen", group["hallucination_like"]).astype(bool).to_numpy()
+    gpt2_hall = group.get("hallucination_like_gpt2", group["hallucination_like"]).astype(bool).to_numpy()
     wer = group["WER"].astype(float).to_numpy()
-    return {
+    out: Dict[str, object] = {
         "split": str(group.iloc[0]["split"]),
         "perturbation": str(group.iloc[0]["perturbation"]),
         "N": int(len(group)),
         "threshold": float(threshold),
-        "hallucination_rate_before": float(hall.mean()),
         "coverage": float(accept.mean()),
         "abstention_rate": float((~accept).mean()),
-        "emitted_hallucination_incidence": float(emitted_hall.mean()),
-        "residual_hallucination_among_accepted": (
-            float(emitted_hall.sum() / n_accept) if n_accept else 0.0
-        ),
-        "hallucination_capture_recall": (
-            float((hall & ~accept).sum() / n_hall) if n_hall else 0.0
-        ),
         "mean_WER_all": float(np.mean(wer)),
-        "mean_WER_accepted": float(np.mean(wer[accept])) if n_accept else float("nan"),
-        "delta_emitted_hallucination_incidence": delta,
-        "delta_CI_low": ci_lo,
-        "delta_CI_high": ci_hi,
+        "mean_WER_accepted": float(np.mean(wer[accept])) if int(accept.sum()) else float("nan"),
     }
+    out.update(_hall_summary(qwen_hall, accept, n_boot=n_boot, seed=seed, suffix="qwen"))
+    out.update(
+        _hall_summary(
+            gpt2_hall,
+            accept,
+            n_boot=n_boot,
+            seed=stable_seed(seed, "gpt2"),
+            suffix="gpt2",
+        )
+    )
+    # Backward-compatible generic columns are aliases for the established Qwen primary label.
+    for stem in [
+        "hallucination_rate_before",
+        "emitted_hallucination_incidence",
+        "residual_hallucination_among_accepted",
+        "hallucination_capture_recall",
+        "delta_emitted_hallucination_incidence",
+        "delta_CI_low",
+        "delta_CI_high",
+    ]:
+        out[stem] = out[f"{stem}_qwen"]
+    return out
 
 
 def add_gate_column(df: pd.DataFrame, threshold: float) -> pd.DataFrame:
     out = df.copy()
     out["accepted"] = accepted_mask(out["ctc_support_nll"], threshold)
     out["abstained"] = ~out["accepted"]
-    out["emitted_hallucination"] = (
-        out["hallucination_like"].astype(bool) & out["accepted"]
-    )
+    out["emitted_hallucination_qwen"] = out["hallucination_like_qwen"].astype(bool) & out["accepted"]
+    out["emitted_hallucination_gpt2"] = out["hallucination_like_gpt2"].astype(bool) & out["accepted"]
+    out["emitted_hallucination"] = out["emitted_hallucination_qwen"]
     return out
 
 
@@ -738,7 +738,7 @@ def generate_all(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Acoustic-consistency abstention experiment for hallucination-like ASR failures."
+        description="Dual-LM acoustic-consistency abstention experiment for hallucination-like ASR failures."
     )
     parser.add_argument("--output_dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--dev_tsv", type=Path, default=None)
@@ -746,6 +746,7 @@ def main() -> None:
     parser.add_argument("--clips_dir", type=Path, default=DEFAULT_CLIPS_DIR)
     parser.add_argument("--base_model_dir", type=Path, default=DEFAULT_BASE_MODEL_DIR)
     parser.add_argument("--base_model_name", default=DEFAULT_BASE_MODEL)
+    parser.add_argument("--qwen_model", default=DEFAULT_QWEN_MODEL)
     parser.add_argument("--gpt2_model", default=DEFAULT_GPT2_MODEL)
     parser.add_argument("--wav2vec2_model", default=DEFAULT_WAV2VEC2_MODEL)
     parser.add_argument("--perturbations", nargs="+", default=DEFAULT_PERTURBATIONS)
@@ -755,8 +756,9 @@ def main() -> None:
     parser.add_argument("--ctc_batch_size", type=int, default=8)
     parser.add_argument("--lm_batch_size", type=int, default=8)
     parser.add_argument("--min_clean_coverage", type=float, default=0.98)
-    parser.add_argument("--hall_wer_threshold", type=float, default=DEFAULT_HALL_WER_THRESHOLD)
-    parser.add_argument("--hall_plaus_threshold", type=float, default=DEFAULT_HALL_PLAUS_THRESHOLD)
+    parser.add_argument("--hall_wer_threshold", type=float, default=None)
+    parser.add_argument("--hall_qwen_plaus_threshold", type=float, default=None)
+    parser.add_argument("--hall_gpt2_plaus_threshold", type=float, default=None)
     parser.add_argument("--bootstrap", type=int, default=10000)
     parser.add_argument("--seed", type=int, default=20260820)
     parser.add_argument("--device", default=None)
@@ -766,10 +768,8 @@ def main() -> None:
 
     if not (0.0 < args.min_clean_coverage <= 1.0):
         raise ValueError("--min_clean_coverage must be in (0, 1]")
-    if "none" not in args.perturbations:
-        raise ValueError("--perturbations must include 'none'")
-    if not any(label != "none" for label in args.perturbations):
-        raise ValueError("--perturbations must include at least one stressed condition")
+    if "none" not in args.perturbations or not any(label != "none" for label in args.perturbations):
+        raise ValueError("--perturbations must include clean 'none' and at least one stressed condition")
 
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -778,6 +778,7 @@ def main() -> None:
     ctc_cache_path = args.output_dir / "ctc_support_cache.jsonl"
     threshold_search_path = args.output_dir / "dev_threshold_search.csv"
     threshold_json_path = args.output_dir / "frozen_gate_threshold.json"
+    hallucination_threshold_json = args.output_dir / "frozen_hallucination_thresholds_dual_lm.json"
     test_outputs_path = args.output_dir / "test_outputs_with_gate.csv"
     test_summary_path = args.output_dir / "test_mitigation_summary.csv"
     dev_summary_path = args.output_dir / "dev_mitigation_summary.csv"
@@ -789,27 +790,12 @@ def main() -> None:
     print(f"DEV TSV: {dev_tsv}", flush=True)
     print(f"TEST TSV: {args.test_tsv}", flush=True)
     print(f"Model: {args.base_model_dir}", flush=True)
+    print(f"Primary LM: {args.qwen_model}; robustness LM: {args.gpt2_model}", flush=True)
     print(f"Perturbations: {args.perturbations}", flush=True)
-    print(
-        "Frozen hallucination proxy: "
-        f"WER>{args.hall_wer_threshold:.6f}, "
-        f"GPT2>{args.hall_plaus_threshold:.6f}",
-        flush=True,
-    )
     print(f"Minimum clean DEV coverage: {args.min_clean_coverage:.3f}", flush=True)
 
-    dev_manifest = load_manifest(
-        dev_tsv,
-        args.clips_dir,
-        split="dev",
-        max_samples=args.dev_max_samples,
-    )
-    test_manifest = load_manifest(
-        args.test_tsv,
-        args.clips_dir,
-        split="test",
-        max_samples=args.test_max_samples,
-    )
+    dev_manifest = load_manifest(dev_tsv, args.clips_dir, split="dev", max_samples=args.dev_max_samples)
+    test_manifest = load_manifest(args.test_tsv, args.clips_dir, split="test", max_samples=args.test_max_samples)
     validate_disjoint(dev_manifest, test_manifest, allow_overlap=args.allow_overlap)
     print(f"DEV rows: {len(dev_manifest):,}; TEST rows: {len(test_manifest):,}", flush=True)
 
@@ -817,9 +803,7 @@ def main() -> None:
         generated = pd.read_csv(generated_path)
         required = set(GENERATED_COLUMNS)
         if not required.issubset(generated.columns):
-            raise ValueError(
-                f"{generated_path} lacks required columns: {sorted(required - set(generated.columns))}"
-            )
+            raise ValueError(f"{generated_path} lacks required columns: {sorted(required - set(generated.columns))}")
         print(f"Reusing generated outputs: {generated_path}", flush=True)
     else:
         generated = generate_all(
@@ -835,24 +819,45 @@ def main() -> None:
         generated.to_csv(generated_path, index=False)
         print(f"Saved generated outputs: {generated_path}", flush=True)
 
-    expected = {
-        (split, perturbation)
-        for split in ["dev", "test"]
-        for perturbation in args.perturbations
-    }
+    expected = {(split, p) for split in ["dev", "test"] for p in args.perturbations}
     present = set(zip(generated["split"], generated["perturbation"]))
     missing = sorted(expected - present)
     if missing:
         raise ValueError(f"Generated outputs missing split/perturbation groups: {missing}")
 
-    scored = add_evaluation_labels(
+    scored = add_dual_lm_scores(
         generated,
         device=device,
+        qwen_model=args.qwen_model,
         gpt2_model=args.gpt2_model,
         lm_batch_size=args.lm_batch_size,
-        wer_threshold=args.hall_wer_threshold,
-        plaus_threshold=args.hall_plaus_threshold,
     )
+    thresholds = derive_hallucination_thresholds(
+        scored,
+        wer_override=args.hall_wer_threshold,
+        qwen_override=args.hall_qwen_plaus_threshold,
+        gpt2_override=args.hall_gpt2_plaus_threshold,
+    )
+    scored = apply_hallucination_labels(scored, thresholds)
+    threshold_payload = {
+        **thresholds,
+        "source_split": "clean Base DEV",
+        "primary_lm": args.qwen_model,
+        "robustness_lm": args.gpt2_model,
+        "qwen_criterion": "WER > wer_threshold AND qwen_plaus > qwen_plausibility_threshold",
+        "gpt2_criterion": "WER > wer_threshold AND gpt2_plaus > gpt2_plausibility_threshold",
+    }
+    hallucination_threshold_json.write_text(
+        json.dumps(threshold_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(
+        "Frozen clean-DEV hallucination thresholds: "
+        f"WER>{thresholds['wer_threshold']:.6f}, "
+        f"Qwen>{thresholds['qwen_plausibility_threshold']:.6f}, "
+        f"GPT2>{thresholds['gpt2_plausibility_threshold']:.6f}",
+        flush=True,
+    )
+
     scored = score_ctc_support(
         scored,
         wav2vec2_model=args.wav2vec2_model,
@@ -866,43 +871,33 @@ def main() -> None:
 
     dev = scored[scored["split"] == "dev"].copy()
     test = scored[scored["split"] == "test"].copy()
-
-    threshold, search_table = select_gate_threshold(
-        dev,
-        min_clean_coverage=args.min_clean_coverage,
-    )
+    threshold, search_table = select_gate_threshold(dev, min_clean_coverage=args.min_clean_coverage)
     search_table.to_csv(threshold_search_path, index=False)
-
     selected = search_table.iloc[0].to_dict()
-    threshold_payload = {
+
+    gate_payload = {
         "ctc_model": args.wav2vec2_model,
         "selection_split": "dev",
-        "selection_perturbations": [
-            x for x in args.perturbations if x != "none"
-        ],
+        "selection_perturbations": [x for x in args.perturbations if x != "none"],
         "threshold": threshold,
         "min_clean_coverage": args.min_clean_coverage,
         "selected_dev_metrics": selected,
-        "hallucination_label_for_tuning_only": {
-            "criterion": "WER > threshold AND normalized GPT2 plausibility > threshold",
-            "wer_threshold": args.hall_wer_threshold,
-            "gpt2_plausibility_threshold": args.hall_plaus_threshold,
-        },
+        "hallucination_labels": threshold_payload,
+        "selection_objective": "maximize Qwen-primary stress hallucination capture subject to clean DEV coverage",
+        "gpt2_role": "parallel robustness evaluation; not used to tune tau",
         "gate_at_test_time": "accept iff finite normalized wav2vec2 CTC hypothesis NLL <= threshold",
         "seed": args.seed,
         "dev_tsv": str(dev_tsv),
         "test_tsv": str(args.test_tsv),
         "base_model_dir": str(args.base_model_dir),
     }
-    threshold_json_path.write_text(
-        json.dumps(threshold_payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    threshold_json_path.write_text(json.dumps(gate_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"Frozen CTC threshold tau={threshold:.6f}", flush=True)
     print(
         "DEV selection: "
         f"clean coverage={selected['clean_coverage']:.3f}, "
-        f"stress hall capture={selected['stress_hallucination_capture_recall']:.3f}, "
+        f"Qwen capture={selected['stress_hallucination_capture_recall_qwen']:.3f}, "
+        f"GPT2 capture={selected['stress_hallucination_capture_recall_gpt2']:.3f}, "
         f"stress coverage={selected['stress_coverage']:.3f}",
         flush=True,
     )
@@ -911,27 +906,24 @@ def main() -> None:
     test_gated = add_gate_column(test, threshold)
     test_gated.to_csv(test_outputs_path, index=False)
 
-    dev_rows = []
-    for perturbation, group in dev_gated.groupby("perturbation", sort=False):
-        dev_rows.append(
-            summarize_group(
-                group,
-                threshold=threshold,
-                n_boot=args.bootstrap,
-                seed=stable_seed(args.seed, "dev", perturbation, "bootstrap"),
-            )
+    dev_rows = [
+        summarize_group(
+            group,
+            threshold=threshold,
+            n_boot=args.bootstrap,
+            seed=stable_seed(args.seed, "dev", perturbation, "bootstrap"),
         )
-    test_rows = []
-    for perturbation, group in test_gated.groupby("perturbation", sort=False):
-        test_rows.append(
-            summarize_group(
-                group,
-                threshold=threshold,
-                n_boot=args.bootstrap,
-                seed=stable_seed(args.seed, "test", perturbation, "bootstrap"),
-            )
+        for perturbation, group in dev_gated.groupby("perturbation", sort=False)
+    ]
+    test_rows = [
+        summarize_group(
+            group,
+            threshold=threshold,
+            n_boot=args.bootstrap,
+            seed=stable_seed(args.seed, "test", perturbation, "bootstrap"),
         )
-
+        for perturbation, group in test_gated.groupby("perturbation", sort=False)
+    ]
     dev_summary = pd.DataFrame(dev_rows)
     test_summary = pd.DataFrame(test_rows)
     dev_summary.to_csv(dev_summary_path, index=False)
@@ -943,40 +935,38 @@ def main() -> None:
             [
                 "perturbation",
                 "N",
-                "hallucination_rate_before",
                 "coverage",
-                "emitted_hallucination_incidence",
-                "residual_hallucination_among_accepted",
-                "hallucination_capture_recall",
+                "hallucination_rate_before_qwen",
+                "emitted_hallucination_incidence_qwen",
+                "hallucination_capture_recall_qwen",
+                "hallucination_rate_before_gpt2",
+                "emitted_hallucination_incidence_gpt2",
+                "hallucination_capture_recall_gpt2",
                 "mean_WER_accepted",
-                "delta_emitted_hallucination_incidence",
-                "delta_CI_low",
-                "delta_CI_high",
             ]
         ].to_string(index=False, float_format=lambda x: f"{x:.4f}"),
         flush=True,
     )
 
     report = {
-        "experiment": "acoustic_consistency_abstention",
+        "experiment": "acoustic_consistency_abstention_dual_lm",
         "purpose": (
             "Proof-of-concept hallucination mitigation inside the diagnostic evaluation pipeline: "
-            "tune under magnified acoustic stress, freeze, and quantify held-out clean cost."
+            "score with Qwen3 and GPT2, tune under magnified acoustic stress, freeze, and quantify held-out clean cost."
         ),
-        "threshold": threshold_payload,
+        "hallucination_thresholds": threshold_payload,
+        "gate_threshold": gate_payload,
         "dev_summary_csv": str(dev_summary_path),
         "test_summary_csv": str(test_summary_path),
         "test_outputs_csv": str(test_outputs_path),
         "generated_outputs_csv": str(generated_path),
         "scored_outputs_csv": str(scored_path),
     }
-    report_path.write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     print("\nOutputs:", flush=True)
     for path in [
+        hallucination_threshold_json,
         threshold_json_path,
         test_summary_path,
         dev_summary_path,
