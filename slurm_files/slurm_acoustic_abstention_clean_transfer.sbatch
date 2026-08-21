@@ -4,6 +4,7 @@
 #SBATCH --account=vemotionsys
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=4
+#SBATCH --gres=gpu:1
 #SBATCH --time=00:30:00
 #SBATCH --mem=16G
 #SBATCH --output=/home/rmfrieske/whisper_hallucination/slurm_logs/%j_hall_ctc_transfer.out
@@ -43,6 +44,7 @@ Original frozen gate: ${GATE}
 Output: ${OUTDIR}
 Coverage sweep: ${COVERAGES:-0.99 0.98 0.95 0.90 0.85}
 Protocol: thresholds calibrated on clean DEV only; TEST never retuned
+Scheduler: 1 GPU requested because this cluster does not run CPU-only sbatch jobs; analysis itself reuses cached scores and is CPU-light
 EOF
 
 python -u acoustic_abstention_clean_transfer.py \
