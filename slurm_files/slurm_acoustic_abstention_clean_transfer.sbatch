@@ -4,6 +4,7 @@
 #SBATCH --account=vemotionsys
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=4
+#SBATCH --gres=gpu:1
 #SBATCH --time=00:30:00
 #SBATCH --mem=16G
 #SBATCH --output=/home/rmfrieske/whisper_hallucination/slurm_logs/%j_hall_ctc_transfer.out

@@ -136,7 +136,7 @@ def binary_ranking_metrics(scores: Sequence[float], labels: Sequence[bool]) -> D
     fp = np.cumsum(neg_by_group)
     tpr = np.r_[0.0, tp / p]
     fpr = np.r_[0.0, fp / n]
-    roc_auc = float(np.trapz(tpr, fpr))
+    roc_auc = float(np.trapezoid(tpr, fpr))
 
     recall = tp / p
     precision = tp / (tp + fp)
