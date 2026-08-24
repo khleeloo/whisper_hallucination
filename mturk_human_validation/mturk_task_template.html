@@ -1,0 +1,101 @@
+<script src="https://assets.crowd.aws/crowd-html-elements.js"></script>
+<style>
+  body { font-family: Arial, sans-serif; line-height: 1.45; color: #222; }
+  .instructions { border: 1px solid #bbb; padding: 14px; margin-bottom: 18px; background: #fafafa; }
+  .item { border-top: 1px solid #ddd; padding: 18px 4px; }
+  .hyp { margin: 10px 0 14px; font-size: 1.05em; }
+  .q { margin: 10px 0; }
+  label { display: block; margin: 5px 0; }
+  audio { width: min(520px, 100%); }
+  .small { font-size: .92em; color: #444; }
+</style>
+
+<crowd-form answer-format="flatten-objects">
+  <div class="instructions">
+    <h2>Audio–transcript comparison</h2>
+    <p><strong>Please use headphones or earphones and work in a quiet environment.</strong> You may replay each clip.</p>
+    <p>For each item, listen to the audio and judge how well the displayed ASR transcript is supported by what you actually hear. Some clips are intentionally difficult or noisy. Do not judge grammar or writing style; judge the relationship between the audio and the displayed transcript.</p>
+    <p class="small"><strong>Grounding scale:</strong> 3 = mostly/fully supported; 2 = partially supported but with substantial errors; 1 = weakly supported; 0 = unsupported; X = cannot judge the audio.</p>
+  </div>
+
+  <div id="items"></div>
+
+  <script>
+    const rows = [
+      ['01','${sample_id_01}','${audio_url_01}','${hypothesis_01}'],
+      ['02','${sample_id_02}','${audio_url_02}','${hypothesis_02}'],
+      ['03','${sample_id_03}','${audio_url_03}','${hypothesis_03}'],
+      ['04','${sample_id_04}','${audio_url_04}','${hypothesis_04}'],
+      ['05','${sample_id_05}','${audio_url_05}','${hypothesis_05}'],
+      ['06','${sample_id_06}','${audio_url_06}','${hypothesis_06}'],
+      ['07','${sample_id_07}','${audio_url_07}','${hypothesis_07}'],
+      ['08','${sample_id_08}','${audio_url_08}','${hypothesis_08}'],
+      ['09','${sample_id_09}','${audio_url_09}','${hypothesis_09}'],
+      ['10','${sample_id_10}','${audio_url_10}','${hypothesis_10}'],
+      ['11','${sample_id_11}','${audio_url_11}','${hypothesis_11}']
+    ];
+
+    const grounding = [
+      ['3','3 — Mostly or fully supported'],
+      ['2','2 — Partially supported; substantial ASR errors'],
+      ['1','1 — Weakly supported; only a small part appears related'],
+      ['0','0 — Unsupported by the audible speech'],
+      ['X','X — Cannot judge the audio']
+    ];
+    const phenotypes = [
+      ['ordinary_error','Ordinary speech-related recognition error'],
+      ['fluent_unsupported','Fluent content not supported by the speech'],
+      ['generic_default','Generic short/default output'],
+      ['repetition','Repeated words or phrases'],
+      ['other_unclear','Other / unclear']
+    ];
+
+    const root = document.getElementById('items');
+    rows.forEach((r, idx) => {
+      const [k, sampleId, url, hyp] = r;
+      const box = document.createElement('div');
+      box.className = 'item';
+
+      const title = document.createElement('h3');
+      title.textContent = `Item ${idx + 1}`;
+      box.appendChild(title);
+
+      const hidden = document.createElement('input');
+      hidden.type = 'hidden'; hidden.name = `sample_id_${k}`; hidden.value = sampleId;
+      box.appendChild(hidden);
+
+      const audio = document.createElement('audio');
+      audio.controls = true; audio.preload = 'none'; audio.src = url;
+      box.appendChild(audio);
+
+      const hp = document.createElement('p');
+      hp.className = 'hyp';
+      const strong = document.createElement('strong'); strong.textContent = 'ASR transcript: ';
+      hp.appendChild(strong); hp.appendChild(document.createTextNode(hyp));
+      box.appendChild(hp);
+
+      const q1 = document.createElement('div'); q1.className = 'q';
+      const q1t = document.createElement('strong'); q1t.textContent = 'How well is this transcript supported by the audio?';
+      q1.appendChild(q1t);
+      grounding.forEach(([value, text], j) => {
+        const lab = document.createElement('label');
+        const inp = document.createElement('input');
+        inp.type = 'radio'; inp.name = `grounding_${k}`; inp.value = value; if (j === 0) inp.required = true;
+        lab.appendChild(inp); lab.appendChild(document.createTextNode(' ' + text)); q1.appendChild(lab);
+      });
+      box.appendChild(q1);
+
+      const q2 = document.createElement('div'); q2.className = 'q';
+      const q2t = document.createElement('strong'); q2t.textContent = 'Which description best fits the displayed output?';
+      q2.appendChild(q2t);
+      phenotypes.forEach(([value, text], j) => {
+        const lab = document.createElement('label');
+        const inp = document.createElement('input');
+        inp.type = 'radio'; inp.name = `failure_type_${k}`; inp.value = value; if (j === 0) inp.required = true;
+        lab.appendChild(inp); lab.appendChild(document.createTextNode(' ' + text)); q2.appendChild(lab);
+      });
+      box.appendChild(q2);
+      root.appendChild(box);
+    });
+  </script>
+</crowd-form>
