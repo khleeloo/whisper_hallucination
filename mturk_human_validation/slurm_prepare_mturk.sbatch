@@ -19,6 +19,10 @@ export PYTHONUNBUFFERED=1
 
 cd /home/rmfrieske/whisper_hallucination
 mkdir -p slurm_logs
+# The preparation script lives in a subdirectory but imports project modules from
+# the repository root (e.g. acoustic_abstention_mitigation.py, paper_final_audit.py).
+# Explicitly expose the repo root on PYTHONPATH so those imports work under SLURM.
+export PYTHONPATH="$(pwd):${PYTHONPATH:-}"
 
 ROOT=/scratch/vemotionsys/rmfrieske/whisper_hallucination
 OUTDIR=${OUTDIR:-${ROOT}/mturk_human_validation}
@@ -36,6 +40,7 @@ Sampling seed: ${SEED}
 Acoustic-noise seed: ${NOISE_SEED}
 Audio URL base: ${AUDIO_URL_BASE}
 Design: 180 experimental items; 10 experimental + 1 QC per HIT; recommend 3 assignments/HIT
+PYTHONPATH: ${PYTHONPATH}
 EOF
 
 python -u mturk_human_validation/prepare_mturk_study.py \
