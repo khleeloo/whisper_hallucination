@@ -21,18 +21,23 @@
   <div id="items"></div>
 
   <script>
+    function fromB64(s) {
+      const bytes = Uint8Array.from(atob(s), c => c.charCodeAt(0));
+      return new TextDecoder('utf-8').decode(bytes);
+    }
+
     const rows = [
-      ['01','${sample_id_01}','${audio_url_01}','${hypothesis_01}'],
-      ['02','${sample_id_02}','${audio_url_02}','${hypothesis_02}'],
-      ['03','${sample_id_03}','${audio_url_03}','${hypothesis_03}'],
-      ['04','${sample_id_04}','${audio_url_04}','${hypothesis_04}'],
-      ['05','${sample_id_05}','${audio_url_05}','${hypothesis_05}'],
-      ['06','${sample_id_06}','${audio_url_06}','${hypothesis_06}'],
-      ['07','${sample_id_07}','${audio_url_07}','${hypothesis_07}'],
-      ['08','${sample_id_08}','${audio_url_08}','${hypothesis_08}'],
-      ['09','${sample_id_09}','${audio_url_09}','${hypothesis_09}'],
-      ['10','${sample_id_10}','${audio_url_10}','${hypothesis_10}'],
-      ['11','${sample_id_11}','${audio_url_11}','${hypothesis_11}']
+      ['01','${sample_id_01}','${audio_url_01}','${hypothesis_b64_01}'],
+      ['02','${sample_id_02}','${audio_url_02}','${hypothesis_b64_02}'],
+      ['03','${sample_id_03}','${audio_url_03}','${hypothesis_b64_03}'],
+      ['04','${sample_id_04}','${audio_url_04}','${hypothesis_b64_04}'],
+      ['05','${sample_id_05}','${audio_url_05}','${hypothesis_b64_05}'],
+      ['06','${sample_id_06}','${audio_url_06}','${hypothesis_b64_06}'],
+      ['07','${sample_id_07}','${audio_url_07}','${hypothesis_b64_07}'],
+      ['08','${sample_id_08}','${audio_url_08}','${hypothesis_b64_08}'],
+      ['09','${sample_id_09}','${audio_url_09}','${hypothesis_b64_09}'],
+      ['10','${sample_id_10}','${audio_url_10}','${hypothesis_b64_10}'],
+      ['11','${sample_id_11}','${audio_url_11}','${hypothesis_b64_11}']
     ];
 
     const grounding = [
@@ -52,7 +57,8 @@
 
     const root = document.getElementById('items');
     rows.forEach((r, idx) => {
-      const [k, sampleId, url, hyp] = r;
+      const [k, sampleId, url, hypB64] = r;
+      const hyp = fromB64(hypB64);
       const box = document.createElement('div');
       box.className = 'item';
 
