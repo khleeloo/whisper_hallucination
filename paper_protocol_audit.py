@@ -152,15 +152,19 @@ def static_checks() -> Dict[str, Any]:
         ),
     }
 
+    raw_seed = arg_default(raw, "seed")
+    adapted_seed = arg_default(adapted, "seed")
+    seamless_seed = arg_default(seam, "seed")
     checks["seeds"] = {
-        "raw_whisper_default": arg_default(raw, "seed"),
-        "adapted_whisper_default": arg_default(adapted, "seed"),
-        "seamless_default": arg_default(seam, "seed"),
-        "exact_noise_realization_shared_all_three": False,
+        "raw_whisper_default": raw_seed,
+        "adapted_whisper_default": adapted_seed,
+        "seamless_default": seamless_seed,
+        "exact_noise_realization_shared_all_three": len({raw_seed, adapted_seed, seamless_seed}) == 1,
         "interpretation": (
-            "Raw Whisper and SeamlessM4T default to seed 20260821, while the adapted Whisper pipeline "
-            "defaults to 20260820. Therefore describe the comparison as a shared/matched stress protocol, "
-            "not as identical noisy waveforms across all three systems."
+            f"Raw Whisper defaults to seed {raw_seed}, Adapted Whisper to {adapted_seed}, and "
+            f"SeamlessM4T to {seamless_seed}. Because the defaults are not identical across all three "
+            "systems, describe the comparison as a shared/matched stress protocol, not as identical "
+            "noisy waveforms across all three systems."
         ),
     }
 
