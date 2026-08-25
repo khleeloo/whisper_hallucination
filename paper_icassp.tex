@@ -72,10 +72,11 @@ SeamlessM4T combines a high ratio with substantial within-output repetition.
 Our contributions are twofold. First, we propose a diagnostic evaluation that
 separates lexical error, LM-relative plausibility, repetition, cross-utterance
 concentration, and independent acoustic support. Second, we show that these
-dimensions expose distinct cross-model failure regimes under matched acoustic
-stress and predict which observable failure component is affected by targeted
-interventions. The aim is not to propose a new decoding algorithm, but to make
-ASR failure analysis more informative than aggregate WER alone.
+dimensions expose distinct cross-model failure regimes under a shared
+acoustic-stress protocol and predict which observable failure component is
+affected by targeted interventions. The aim is not to propose a new decoding
+algorithm, but to make ASR failure analysis more informative than aggregate WER
+alone.
 
 \section{Related Work}
 Hallucination-like behavior in ASR has been studied from several complementary
@@ -134,7 +135,7 @@ whereas a fluent unsupported hypothesis can receive a high ratio without
 belonging to a dominant output mode.
 
 \subsection{Operational hallucination-like signature}
-To trace high-error/high-plausibility behavior, for LM evaluator $m$ we use
+To trace high-error/high-LM-ratio behavior, for LM evaluator $m$ we use
 \begin{equation}
 H_m^{\mathrm{diag}}(x)=
 \mathbb{1}[\mathrm{WER}(x)>\tau_W]
@@ -203,7 +204,7 @@ sharply.
 \begin{table}[t]
 \centering
 \caption{Failure signatures under a shared acoustic-stress protocol. $H_Q$
-denotes the Qwen3 diagnostic high-WER/high-plausibility rate using the
+denotes the Qwen3 diagnostic high-WER/high-LM-ratio rate using the
 reference-normalized LM ratio. Rep34 is repeated trigram/four-gram incidence;
 Top-1 is the most frequent normalized-hypothesis mass.}
 \label{tab:stress}
@@ -364,11 +365,11 @@ category.
 
 The current study is limited to three model states from two generative ASR
 families and deliberately severe synthetic stress. The operational
-high-WER/high-plausibility criterion is evaluation-only, reference-normalized,
-and not human ground truth; the acoustic-support gate becomes near-total
-abstention once the signal is overwhelmed. Broader model families, realistic
-environmental noise, and human audio-grounding judgments are needed before
-drawing deployment-level conclusions.
+high-WER/high-LM-ratio criterion is evaluation-only, reference-normalized, and
+not human ground truth; the acoustic-support gate becomes near-total abstention
+once the signal is overwhelmed. Broader model families, realistic environmental
+noise, and human audio-grounding judgments are needed before drawing
+deployment-level conclusions.
 
 \bibliographystyle{IEEEtran}
 \bibliography{custom,mybib,rebuttal_additions}
