@@ -19,22 +19,22 @@ Word error rate (WER) measures how inaccurate an automatic speech recognition
 (ASR) output is, but not how it fails. Under weak acoustic evidence, generative
 ASR systems may produce ordinary recognition errors, repetitive decoding,
 generic decoder defaults, cross-utterance output collapse, or fluent text that
-is weakly supported by the signal. We introduce a multi-axis diagnostic
-framework combining lexical error, LM-relative plausibility, within-output
-repetition, cross-utterance output concentration, and independent acoustic
-support. We evaluate raw Whisper-large-v3, a Common-Voice-adapted
-Whisper-large-v3, and SeamlessM4T-v2-Large under a shared acoustic-stress
-protocol on the same held-out utterances. The systems exhibit sharply different
-severe-noise regimes: raw Whisper collapses toward a few generic outputs,
-adapted Whisper maintains a high LM-relative fluency ratio while becoming
-strongly concentrated, and SeamlessM4T combines a high LM-relative ratio with
-substantial repetition. These differences are not visible from WER alone.
-Independent wav2vec2-CTC scoring indicates that severe-stress hypotheses receive
-little acoustic support, while targeted intervention experiments show that
-anti-repetition decoding substantially reduces the repetition-heavy SeamlessM4T
+is weakly supported by the signal. Rather than proposing another scalar
+hallucination score, we characterize failures with complementary measures of
+lexical error, LM-relative plausibility, within-output repetition,
+cross-utterance output concentration, and independent acoustic support. We
+evaluate raw Whisper-large-v3, a Common-Voice-adapted Whisper-large-v3, and
+SeamlessM4T-v2-Large under matched acoustic stress. The systems exhibit sharply
+different severe-noise regimes: raw Whisper collapses toward a few generic
+outputs, adapted Whisper maintains a high LM-relative ratio while becoming
+strongly concentrated, and SeamlessM4T combines a high ratio with substantial
+repetition. External validation on 4,990 human-annotated HALAS predictions
+shows that Rep34 occurs in 69.0\% of human-labeled looping outputs but only 1.8\%
+of non-looping outputs. Targeted intervention experiments further show that
+anti-repetition decoding substantially improves the repetition-heavy SeamlessM4T
 failure but has little effect on raw Whisper's dominant collapse. The results
-support treating hallucination-like ASR failure as a heterogeneous set of
-failure regimes rather than a single scalar error category.
+support treating hallucination-like ASR failure as heterogeneous failure
+regimes whose signatures have different operational meaning.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -61,22 +61,25 @@ collapse, and a decoder-level constraint cannot restore information that is no
 longer present in the signal.
 
 We therefore ask a focused question: \emph{when acoustic evidence deteriorates,
-do generative ASR systems fail in the same way?} We introduce a multi-axis
-failure profile and apply a shared acoustic-stress protocol to three systems
-spanning two model families and two Whisper model states. Our results show that
-severe acoustic uncertainty does not induce a universal failure signature. Raw
-Whisper primarily collapses to a few generic defaults; adapted Whisper maintains
-a high LM-relative fluency ratio while becoming increasingly concentrated; and
-SeamlessM4T combines a high ratio with substantial within-output repetition.
+do generative ASR systems fail in the same way?} We apply a shared
+acoustic-stress protocol to three systems spanning two model families and two
+Whisper model states, then characterize the resulting behavior with
+complementary failure signatures. Severe acoustic uncertainty does not induce a
+universal regime: Raw Whisper primarily collapses to a few generic defaults;
+adapted Whisper maintains a high LM-relative ratio while becoming increasingly
+concentrated; and SeamlessM4T combines a high ratio with substantial
+within-output repetition.
 
-Our contributions are twofold. First, we propose a diagnostic evaluation that
-separates lexical error, LM-relative plausibility, repetition, cross-utterance
-concentration, and independent acoustic support. Second, we show that these
-dimensions expose distinct cross-model failure regimes under a shared
-acoustic-stress protocol and predict which observable failure component is
-affected by targeted interventions. The aim is not to propose a new decoding
-algorithm, but to make ASR failure analysis more informative than aggregate WER
-alone.
+Our contributions are threefold. First, we show that matched acoustic
+degradation produces qualitatively different cross-system failure regimes even
+when lexical error is similarly severe. Second, we externally validate one
+structural axis on HALAS \cite{baranski2026halas}: Rep34 strongly tracks
+human-annotated looping on naturally occurring speech errors, whereas
+cross-utterance recurrence does not behave as a generic hallucination detector.
+Third, we show that failure signatures have operational value: the same targeted
+intervention behaves very differently depending on which component dominates.
+The contribution is therefore the identification and validation of distinct
+failure regimes, not a new universal hallucination metric.
 
 \section{Related Work}
 Hallucination-like behavior in ASR has been studied from several complementary
@@ -84,19 +87,22 @@ angles. Recent analyses report fabricated, repeated, or weakly grounded
 transcriptions under non-speech input, distribution shift, disfluent speech,
 and difficult acoustic conditions
 \cite{koenecke2024careless,atwany2025lost,baranski2025investigation,sridhar25_interspeech,imai-etal-2025-evaluating,Zhang2024}.
-These studies establish that severe ASR errors can be reliability failures
-rather than ordinary lexical mistakes, but the resulting behaviors are often
-summarized with aggregate error rates or a single hallucination label.
+HALAS \cite{baranski2026halas} complements synthetic-stress studies with
+human span-level annotations of hallucination, looping, and looping
+hallucination on naturally occurring Earnings22 speech. These works establish
+that severe ASR errors can be reliability failures rather than ordinary lexical
+mistakes.
 
 WER remains the standard ASR metric, yet it conflates substitutions, deletions,
 insertions, repetition, and unsupported generation. Complementary metrics based
 on semantic similarity, information content, or fluency can expose additional
 structure \cite{martindale-etal-2019-identifying,ERRATTAHI201832,papineni-etal-2002-bleu,lin-2004-rouge,mutton-etal-2007-gleu}. Recent work such as SHALLOW
 \cite{Koudounas2025SHALLOW} likewise motivates multi-axis evaluation of ASR
-hallucination. Our focus is narrower and operational: we use lexical error,
-LM-relative plausibility, repetition, output concentration, and independent
-acoustic support together to distinguish \emph{failure regimes}, then test
-whether those distinctions predict how simple interventions behave.
+hallucination. Our contribution is complementary rather than another metric
+bundle: we study how observable diagnostics co-vary into distinct
+\emph{failure regimes} under matched degradation, validate the repetition axis
+against independent human labels, and test whether those regimes predict how
+simple interventions behave.
 
 Perturbation-based evaluation is a natural way to expose such regimes. Noise
 injection and robustness studies show that input degradation can change not
@@ -152,8 +158,9 @@ LM evaluator.
 \section{Experimental Setup}
 \subsection{Models and acoustic stress}
 We evaluate three generative ASR systems on English Mozilla Common Voice 22.0
-(2025-06-20): untouched \texttt{openai/whisper-large-v3} (Raw Whisper), a
-Common-Voice-adapted Whisper-large-v3 checkpoint (Adapted Whisper), and untouched
+(2025-06-20): untouched \texttt{openai/whisper-large-v3} (Raw Whisper), the
+same Whisper-large-v3 checkpoint with lightweight LoRA adaptation on English
+Common Voice (Adapted Whisper), and untouched
 \texttt{facebook/seamless-m4t-v2-large}. Development and test manifests are
 disjoint. Each cross-model condition contains the same 1,000 held-out test
 utterance IDs across all three systems. The adapted model is additionally
@@ -161,12 +168,10 @@ evaluated with silence, leading silence, localized noise, reverberation,
 speech-band noise, and full-utterance additive noise. The cross-model comparison
 uses clean speech and full-utterance noise at amplitudes 0.50 and 0.75. Full
 noise adds i.i.d. Gaussian waveform noise scaled by this absolute amplitude
-before clipping to $[-1,1]$; the stress levels are not SNR-normalized. The
-cached runs use seed 20260821 for Raw Whisper and SeamlessM4T and seed 20260820
-for Adapted Whisper. Thus, cross-model comparisons match utterance identity and
-nominal perturbation strength, but do not assume identical Gaussian noise
-realizations across all three systems. Model-specific thresholds are calibrated
-on clean development outputs and frozen before test evaluation.
+before clipping to $[-1,1]$; the stress levels are not SNR-normalized. All
+cross-model perturbations are generated deterministically using the same random
+seed, ensuring matched noisy inputs across models. Model-specific thresholds
+are calibrated on clean development outputs and frozen before test evaluation.
 
 The severe conditions are diagnostic stress tests rather than a simulation of
 one specific deployment environment. The broader battery establishes that not
@@ -174,6 +179,18 @@ all perturbations produce the same behavior: moderate or localized corruption
 primarily increases recognition error, whereas the severe full-utterance
 conditions expose decoder-dominated regimes after acoustic constraint has been
 substantially weakened.
+
+\subsection{External validation on HALAS}
+To test whether structural failure signatures transfer beyond synthetic stress,
+we evaluate them on the official HALAS test split \cite{baranski2026halas}.
+HALAS provides human span annotations distinguishing hallucination, looping, and
+looping hallucination on natural Earnings22 speech, together with corrected
+references and model predictions. We analyze 4,990 predictions from seven ASR
+systems (Whisper large-v2, large-v3, large-v3-turbo, CrisperWhisper, Canary,
+Canary Flash, and Parakeet); Phi-4 and Granite are excluded because HALAS notes
+that they were trained on Earnings22. No ASR inference is rerun. Rep34 and
+exact-output recurrence are computed directly from the released predictions,
+and WER uses the corrected references.
 
 \subsection{Independent support and interventions}
 We use \texttt{facebook/wav2vec2-large-960h-lv60-self} as an independent
@@ -285,6 +302,24 @@ These results show why a single hallucination rate is insufficient. Loss of
 acoustic constraint is common to the severe conditions, but the resulting
 textual phenotype differs substantially across systems and model states.
 
+\subsection{External human validation of the repetition axis}
+On HALAS, Rep34 is present in 69.0\% of human-labeled looping outputs but only
+1.76\% of non-looping outputs (Fisher odds ratio 123.8,
+$p=6.56\times10^{-53}$). As a descriptive single-axis discriminator, Rep34
+achieves ROC-AUC 0.836 for human looping. The phenotype breakdown is consistent:
+Rep34 occurs in only 2.43\% of ordinary hallucination outputs, versus 57.7\% of
+looping outputs and 90.0\% of looping-hallucination outputs. Thus Rep34 transfers
+to natural speech as a specific repetition/looping signature rather than a
+generic hallucination score.
+
+Cross-utterance recurrence does not show the same transfer. Exact-output
+recurrence is only borderline associated with human hallucination
+(odds ratio 1.34, $p=0.053$), and the continuous recurrence frequency has
+ROC-AUC 0.508. WER remains informative for hallucination itself (ROC-AUC 0.761),
+but does not identify the failure type. We therefore interpret concentration as
+a stress-induced decoder-collapse phenotype, while Rep34 has direct external
+support as a human-recognizable looping component.
+
 \subsection{Independent acoustic support}
 The independent CTC score provides a separate check on whether hypotheses remain
 supported by the waveform under severe stress. When used as a frozen abstention
@@ -354,24 +389,33 @@ produces similarly high-ratio output with substantial within-output repetition.
 WER alone cannot distinguish these regimes, while the LM-relative ratio alone
 would miss raw Whisper's strongest collapse.
 
-The intervention probes show why this distinction matters operationally.
+The HALAS validation shows that at least one structural axis transfers beyond
+synthetic stress: Rep34 is strongly associated with independently
+human-annotated looping on natural speech. The negative recurrence result is
+equally informative: cross-utterance concentration should not be interpreted as
+a universal hallucination detector, but as a decoder-collapse signature exposed
+under the severe matched-stress conditions. Together with the intervention
+probes, this supports a failure-regime interpretation rather than compressing
+all outputs into one scalar hallucination category.
+
+The intervention probes also show why this distinction matters operationally.
 Anti-repetition decoding is effective when repetition is prominent, but does
 little for decoder-default collapse and does not by itself restore acoustic
 grounding. Independent CTC support provides a phenotype-agnostic abstention
 signal when the independent acoustic model assigns little support to the
-hypothesis. We therefore argue for evaluating hallucination-like ASR failure as
-a multi-dimensional failure profile rather than a single binary or scalar
-category.
+hypothesis.
 
 The current study is limited to three model states from two generative ASR
-families and deliberately severe synthetic stress. The operational
-high-WER/high-LM-ratio criterion is evaluation-only, reference-normalized, and
-not human ground truth; the acoustic-support gate becomes near-total abstention
-once the signal is overwhelmed. Broader model families, realistic environmental
-noise, and human audio-grounding judgments are needed before drawing
-deployment-level conclusions.
+families and deliberately severe synthetic stress. HALAS provides external
+human validation on natural Earnings22 errors, but does not contain human
+judgments for our exact stressed Common Voice outputs. The operational
+high-WER/high-LM-ratio criterion remains evaluation-only and
+reference-normalized, and the acoustic-support gate becomes near-total
+abstention once the signal is overwhelmed. Broader model families, realistic
+environmental noise, and direct human grounding judgments on matched stressed
+outputs remain important future work.
 
 \bibliographystyle{IEEEtran}
-\bibliography{custom,mybib,rebuttal_additions}
+\bibliography{custom,mybib,rebuttal_additions,halas}
 
 \end{document}
