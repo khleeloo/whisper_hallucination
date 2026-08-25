@@ -64,7 +64,7 @@ Clean DEV coverage constraint: ${MIN_CLEAN_COVERAGE:-0.95}
 TEST: frozen gate, no retuning
 DEV samples/condition: ${DEV_MAX_SAMPLES:-1000}
 TEST samples/condition: ${TEST_MAX_SAMPLES:-1000}
-Seed: ${SEED:-20260820}
+Seed: ${SEED:-20260821}
 EOF
 
 # Fail early with a useful message if this conda environment is too old.
@@ -99,7 +99,7 @@ python -u seamless_m4t_stress_pipeline.py \
     --ctc_batch_size "${CTC_BATCH_SIZE:-8}" \
     --strict_wer "${STRICT_WER:-0.5}" \
     --min_clean_coverage "${MIN_CLEAN_COVERAGE:-0.95}" \
-    --seed "${SEED:-20260820}" \
+    --seed "${SEED:-20260821}" \
     --qwen_model "${QWEN_MODEL:-Qwen/Qwen3-0.6B}" \
     --gpt2_model "${GPT2_MODEL:-gpt2}" \
     "${EXTRA_ARGS[@]}"
