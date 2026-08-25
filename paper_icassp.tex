@@ -134,8 +134,7 @@ whereas a fluent unsupported hypothesis can receive a high ratio without
 belonging to a dominant output mode.
 
 \subsection{Operational hallucination-like signature}
-To trace high-error/high-plausibility behavior, for plausibility model $m$ we
-use
+To trace high-error/high-plausibility behavior, for LM evaluator $m$ we use
 \begin{equation}
 H_m^{\mathrm{diag}}(x)=
 \mathbb{1}[\mathrm{WER}(x)>\tau_W]
@@ -155,14 +154,18 @@ We evaluate three generative ASR systems on English Mozilla Common Voice 22.0
 (2025-06-20): untouched \texttt{openai/whisper-large-v3} (Raw Whisper), a
 Common-Voice-adapted Whisper-large-v3 checkpoint (Adapted Whisper), and untouched
 \texttt{facebook/seamless-m4t-v2-large}. Development and test manifests are
-disjoint, and each cross-model condition uses 1,000 held-out test utterances
-from the same test manifest. The adapted model is additionally evaluated with
-silence, leading silence, localized noise, reverberation, speech-band noise, and
-full-utterance additive noise. The cross-model comparison uses clean speech and
-full-utterance noise at amplitudes 0.50 and 0.75. Full noise adds i.i.d. Gaussian
-waveform noise scaled by this absolute amplitude before clipping to $[-1,1]$;
-the stress levels are not SNR-normalized. Model-specific thresholds are
-calibrated on clean development outputs and frozen before test evaluation.
+disjoint. Each cross-model condition contains the same 1,000 held-out test
+utterance IDs across all three systems. The adapted model is additionally
+evaluated with silence, leading silence, localized noise, reverberation,
+speech-band noise, and full-utterance additive noise. The cross-model comparison
+uses clean speech and full-utterance noise at amplitudes 0.50 and 0.75. Full
+noise adds i.i.d. Gaussian waveform noise scaled by this absolute amplitude
+before clipping to $[-1,1]$; the stress levels are not SNR-normalized. The
+cached runs use seed 20260821 for Raw Whisper and SeamlessM4T and seed 20260820
+for Adapted Whisper. Thus, cross-model comparisons match utterance identity and
+nominal perturbation strength, but do not assume identical Gaussian noise
+realizations across all three systems. Model-specific thresholds are calibrated
+on clean development outputs and frozen before test evaluation.
 
 The severe conditions are diagnostic stress tests rather than a simulation of
 one specific deployment environment. The broader battery establishes that not
@@ -172,14 +175,16 @@ conditions expose decoder-dominated regimes after acoustic constraint has been
 substantially weakened.
 
 \subsection{Independent support and interventions}
-We use wav2vec2-CTC as an independent acoustic-support model. Its summed CTC
-loss for the generated hypothesis is normalized by the number of CTC target
-tokens. A reference-free abstention rule emits a hypothesis only when
+We use \texttt{facebook/wav2vec2-large-960h-lv60-self} as an independent
+wav2vec2-CTC acoustic-support model. Its summed CTC loss for the generated
+hypothesis is normalized by the number of CTC target tokens. A reference-free
+abstention rule emits a hypothesis only when
 \begin{equation}
 \frac{\mathrm{NLL}_{\mathrm{CTC}}(x,\hat y)}{|\hat y|}\leq \tau,
 \end{equation}
-with $\tau$ calibrated on disjoint development stress data subject to a clean
-coverage constraint and frozen for test evaluation.
+with $\tau$ calibrated on disjoint stressed development data and frozen for test
+evaluation. For the Raw-Whisper and SeamlessM4T analyses reported below, the
+threshold is selected subject to at least 95\% clean-DEV coverage.
 
 To test whether the diagnostic profile has decision utility, we evaluate
 (1) anti-repetition decoding with a fixed repetition penalty of 1.2, set before
