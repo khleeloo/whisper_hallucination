@@ -209,17 +209,19 @@ def manuscript_checks(tex_path: Optional[Path], checks: Dict[str, Any]) -> Dict[
     if not tex_path.exists():
         return {"checked": False, "error": f"missing manuscript: {tex_path}"}
     text = tex_path.read_text(encoding="utf-8")
-    lower = text.lower()
+    flat = re.sub(r"\s+", " ", text.lower())
     return {
         "checked": True,
         "path": str(tex_path),
-        "mentions_common_voice_22": "common voice 22.0" in lower,
-        "defines_reference_normalized_lm_score": "reference-normalized" in lower,
-        "states_noise_not_snr_normalized": "not snr-normalized" in lower,
-        "states_penalty_fixed_before_test": "fixed before test" in lower,
-        "unsafe_standalone_plausibility_wording": "standalone linguistic plausibility" in lower,
-        "unsafe_identical_waveform_implication": "identical noisy waveforms" in lower,
-        "uses_shared_protocol_wording": "shared acoustic-stress protocol" in lower,
+        "mentions_common_voice_22": "common voice 22.0" in flat,
+        "defines_reference_normalized_lm_score": "reference-normalized" in flat,
+        "states_noise_not_snr_normalized": "not snr-normalized" in flat,
+        "states_penalty_fixed_before_test": (
+            "fixed before test" in flat or "set before test" in flat
+        ),
+        "unsafe_standalone_plausibility_wording": "standalone linguistic plausibility" in flat,
+        "unsafe_identical_waveform_implication": "identical noisy waveforms" in flat,
+        "uses_shared_protocol_wording": "shared acoustic-stress protocol" in flat,
         "seed_warning": checks["seeds"]["interpretation"],
     }
 
