@@ -1,18 +1,14 @@
 #!/usr/bin/env python3
-"""Audit every paper-facing quantitative claim against final cached results.
+"""Fail-fast numerical audit for the compressed ICASSP manuscript.
 
-This script is inference-free. It reads the final audit CSVs plus the frozen
-Raw-Whisper and SeamlessM4T gate summaries, parses the ICASSP LaTeX tables, and
-checks that the manuscript numbers are exactly the rounded values produced by
-the final analysis.
+Uses only cached/final outputs: no ASR or LM inference. It verifies the three
+paper tables, the clean-WER CI-overlap statement, CTC-gate coverage/capture
+claims, the Raw-Whisper generic-output examples, and the qualitative GPT-2
+separation.
 
-Run from the repository root on the cluster:
-
+Run:
     python paper_final_audit.py
     python paper_numerical_audit.py --tex paper_icassp.tex
-
-The script exits non-zero on a numerical mismatch and writes a JSON report to
-/scratch/vemotionsys/rmfrieske/whisper_hallucination/paper_numerical_audit.json.
 """
 from __future__ import annotations
 
@@ -29,419 +25,290 @@ import pandas as pd
 REPO = Path(__file__).resolve().parent
 ROOT = Path("/scratch/vemotionsys/rmfrieske/whisper_hallucination")
 FINAL = ROOT / "paper_final_audit"
-DEFAULT_REPORT = ROOT / "paper_numerical_audit.json"
+REPORT = ROOT / "paper_numerical_audit.json"
+SUMMARY = FINAL / "cross_model_summary_verified.csv"
+CIS = FINAL / "cross_model_bootstrap95.csv"
+UTILITY = FINAL / "decision_utility_final_rescore.csv"
+RAW_GATE = ROOT / "pretrained_whisper_stress_pipeline/rescore_explore/test_gate_summary_corrected.csv"
+SEAM_GATE = ROOT / "seamless_m4t_v2_stress_pipeline_fixedwer/test_gate_summary.csv"
+RAW_TOP = ROOT / "pretrained_whisper_stress_pipeline/rescore_explore/top_hypotheses_by_condition.csv"
 
-SUMMARY_CSV = FINAL / "cross_model_summary_verified.csv"
-CI_CSV = FINAL / "cross_model_bootstrap95.csv"
-UTILITY_CSV = FINAL / "decision_utility_final_rescore.csv"
-RAW_GATE_CSV = ROOT / "pretrained_whisper_stress_pipeline/rescore_explore/test_gate_summary_corrected.csv"
-SEAM_GATE_CSV = ROOT / "seamless_m4t_v2_stress_pipeline_fixedwer/test_gate_summary.csv"
-RAW_TOP_CSV = ROOT / "pretrained_whisper_stress_pipeline/rescore_explore/top_hypotheses_by_condition.csv"
-
-COND_TO_PAPER = {
+COND = {
     "none": "clean",
     "full_noise_amp0.5_dur0.0": ".50",
     "full_noise_amp0.75_dur0.0": ".75",
 }
-PAPER_TO_COND = {v: k for k, v in COND_TO_PAPER.items()}
-MODEL_TO_PAPER = {
+INV_COND = {v: k for k, v in COND.items()}
+PAPER_MODEL = {
     "Raw Whisper": "Raw Whisper",
     "Adapted Whisper": "Adapted Whisper",
     "SeamlessM4T-v2": "SeamlessM4T",
 }
-PAPER_TO_MODEL = {v: k for k, v in MODEL_TO_PAPER.items()}
+INV_MODEL = {v: k for k, v in PAPER_MODEL.items()}
 
 
-def require(path: Path) -> None:
+def need(path: Path) -> None:
     if not path.exists():
         raise FileNotFoundError(
-            f"Missing required final-audit artifact: {path}\n"
-            "Run `python paper_final_audit.py` first, and ensure the final cached "
-            "cross-model/gate outputs are present."
+            f"Missing {path}. Run `python paper_final_audit.py` first and make "
+            "sure the final cached gate outputs exist."
         )
 
 
-def table_block(tex: str, label: str) -> str:
-    marker = f"\\label{{{label}}}"
-    pos = tex.find(marker)
-    if pos < 0:
-        raise ValueError(f"Could not find {marker} in manuscript")
-    start = tex.rfind("\\begin{table}", 0, pos)
-    end = tex.find("\\end{table}", pos)
-    if start < 0 or end < 0:
+def block(tex: str, label: str) -> str:
+    p = tex.find(f"\\label{{{label}}}")
+    if p < 0:
+        raise ValueError(f"Missing table label {label}")
+    a = tex.rfind("\\begin{table}", 0, p)
+    b = tex.find("\\end{table}", p)
+    if a < 0 or b < 0:
         raise ValueError(f"Could not bound table {label}")
-    return tex[start : end + len("\\end{table}")]
+    return tex[a:b]
 
 
-def clean_cell(x: str) -> str:
-    x = x.strip()
-    x = x.replace("\\%", "").replace("$", "")
-    x = x.replace("\\Delta", "Delta")
-    x = x.replace("\\textbf{", "").replace("}", "")
-    return x.strip()
+def cell(s: str) -> str:
+    s = s.strip()
+    s = re.sub(r"\\\\\s*$", "", s)
+    s = s.replace("\\%", "").replace("$", "")
+    s = s.replace("\\Delta", "Delta")
+    return s.strip()
 
 
-def num(x: str) -> float:
-    x = clean_cell(x).replace("+", "")
-    x = re.sub(r"[^0-9eE+\-.]", "", x)
-    if not x or x in {"-", "."}:
-        return float("nan")
-    return float(x)
+def number(s: str) -> float:
+    s = cell(s).replace("+", "")
+    s = re.sub(r"[^0-9eE.\-+]", "", s)
+    return float(s) if s not in {"", "-", ".", "--"} else float("nan")
 
 
-def close_round(actual: float, paper: float, decimals: int) -> bool:
-    return math.isfinite(actual) and math.isfinite(paper) and round(actual, decimals) == round(paper, decimals)
+def same_round(a: float, b: float, d: int) -> bool:
+    return math.isfinite(a) and math.isfinite(b) and round(a, d) == round(b, d)
 
 
-def add_check(checks: List[dict], name: str, ok: bool, *, expected=None, observed=None, source=None) -> None:
-    checks.append(
-        {
-            "check": name,
-            "ok": bool(ok),
-            "expected": expected,
-            "observed": observed,
-            "source": source,
-        }
-    )
+def check(log: List[dict], name: str, ok: bool, expected=None, observed=None, source=None) -> None:
+    log.append({
+        "check": name,
+        "ok": bool(ok),
+        "expected": expected,
+        "observed": observed,
+        "source": source,
+    })
 
 
-def parse_stress_rows(block: str) -> Dict[Tuple[str, str], List[str]]:
-    rows: Dict[Tuple[str, str], List[str]] = {}
-    current_model = None
-    for line in block.splitlines():
+def parse_stress(tex: str) -> Dict[Tuple[str, str], List[str]]:
+    out: Dict[Tuple[str, str], List[str]] = {}
+    current = None
+    for line in block(tex, "tab:stress").splitlines():
         if "&" not in line or "\\\\" not in line:
             continue
-        cells = [c.strip() for c in line.split("&")]
-        if len(cells) < 7 or cells[0].strip() == "Model":
+        c = [cell(x) for x in line.split("&")]
+        if len(c) < 7 or c[0] == "Model":
             continue
-        first = clean_cell(cells[0])
-        if first:
-            current_model = PAPER_TO_MODEL.get(first)
-        cond = clean_cell(cells[1])
-        if current_model and cond in PAPER_TO_COND:
-            rows[(current_model, PAPER_TO_COND[cond])] = cells[2:7]
-    return rows
-
-
-def audit_stress_table(tex: str, summary: pd.DataFrame, checks: List[dict]) -> None:
-    rows = parse_stress_rows(table_block(tex, "tab:stress"))
-    for _, r in summary.iterrows():
-        model = str(r["model"])
-        cond = str(r["condition"])
-        if model not in MODEL_TO_PAPER or cond not in COND_TO_PAPER:
-            continue
-        key = (model, cond)
-        cells = rows.get(key)
-        add_check(checks, f"stress row exists: {model} {cond}", cells is not None, expected="table row", observed=cells)
-        if cells is None:
-            continue
-        values = [num(c) for c in cells]
-        expected = [
-            (float(r["WER"]), 3, "WER"),
-            (float(r["qwen_plaus"]), 3, "Qwen ratio"),
-            (float(r["diag_H_qwen_pct"]), 1, "diag H_Q"),
-        ]
-        for idx, (actual, dec, metric) in enumerate(expected):
-            add_check(
-                checks,
-                f"stress {model} {COND_TO_PAPER[cond]} {metric}",
-                close_round(actual, values[idx], dec),
-                expected=round(actual, dec),
-                observed=values[idx],
-                source=str(SUMMARY_CSV),
-            )
-
-        # Rep34: the paper intentionally abbreviates very small Adapted-clean
-        # incidence as <.5; all other cells are numeric to one decimal.
-        rep_actual = float(r["rep34_pct"])
-        rep_cell = clean_cell(cells[3]).replace(" ", "")
-        if "<" in rep_cell:
-            ok = rep_actual < 0.5 and cond == "none" and model == "Adapted Whisper"
-            observed = rep_cell
-        else:
-            ok = close_round(rep_actual, values[3], 1)
-            observed = values[3]
-        add_check(
-            checks,
-            f"stress {model} {COND_TO_PAPER[cond]} Rep34",
-            ok,
-            expected=("<0.5" if rep_actual < 0.5 and model == "Adapted Whisper" and cond == "none" else round(rep_actual, 1)),
-            observed=observed,
-            source=str(SUMMARY_CSV),
-        )
-
-        # Clean Top-1 is deliberately omitted from the compact table.
-        top_cell = clean_cell(cells[4])
-        if cond == "none":
-            add_check(checks, f"stress {model} clean Top-1 omitted", top_cell == "--", expected="--", observed=top_cell)
-        else:
-            top_actual = float(r["top1_mass_pct"])
-            add_check(
-                checks,
-                f"stress {model} {COND_TO_PAPER[cond]} Top-1",
-                close_round(top_actual, values[4], 1),
-                expected=round(top_actual, 1),
-                observed=values[4],
-                source=str(SUMMARY_CSV),
-            )
-
-
-def parse_ci_range(cell: str) -> Tuple[float, float]:
-    s = clean_cell(cell).replace("–", "--").replace("—", "--")
-    m = re.search(r"([0-9.]+)\s*--\s*([0-9.]+)", s)
-    if not m:
-        raise ValueError(f"Could not parse CI range: {cell!r}")
-    return float(m.group(1)), float(m.group(2))
-
-
-def audit_ci_table(tex: str, ci: pd.DataFrame, checks: List[dict]) -> None:
-    block = table_block(tex, "tab:ci")
-    rows: Dict[Tuple[str, str], List[str]] = {}
-    alias = {"Raw": "Raw Whisper", "Adapted": "Adapted Whisper", "Seamless": "SeamlessM4T-v2"}
-    for line in block.splitlines():
-        if "&" not in line or "\\\\" not in line:
-            continue
-        cells = [c.strip() for c in line.split("&")]
-        if len(cells) < 5:
-            continue
-        model = alias.get(clean_cell(cells[0]))
-        noise = clean_cell(cells[1])
-        if model and noise in {".50", ".75"}:
-            rows[(model, PAPER_TO_COND[noise])] = cells[2:5]
-
-    metric_order = ["diag_H_qwen_pct", "rep34_pct", "top1_mass_pct"]
-    for (model, cond), cells in rows.items():
-        for metric, cell in zip(metric_order, cells):
-            z = ci[(ci["model"] == model) & (ci["condition"] == cond) & (ci["metric"] == metric)]
-            if len(z) != 1:
-                add_check(checks, f"CI source row {model} {cond} {metric}", False, expected=1, observed=len(z))
-                continue
-            lo, hi = float(z.iloc[0]["ci_low"]), float(z.iloc[0]["ci_high"])
-            plo, phi = parse_ci_range(cell)
-            add_check(
-                checks,
-                f"CI table {model} {COND_TO_PAPER[cond]} {metric}",
-                round(lo, 1) == round(plo, 1) and round(hi, 1) == round(phi, 1),
-                expected=[round(lo, 1), round(hi, 1)],
-                observed=[plo, phi],
-                source=str(CI_CSV),
-            )
-
-    # Validate the prose claim that clean WER CIs overlap across all systems.
-    clean = ci[(ci["condition"] == "none") & (ci["metric"] == "WER")]
-    if len(clean) == 3:
-        overlap = float(clean["ci_low"].max()) <= float(clean["ci_high"].min())
-        interval = [float(clean["ci_low"].max()), float(clean["ci_high"].min())]
-        add_check(checks, "clean WER 95% CIs have common overlap", overlap, expected="non-empty overlap", observed=interval, source=str(CI_CSV))
-    else:
-        add_check(checks, "clean WER CI rows available", False, expected=3, observed=len(clean), source=str(CI_CSV))
-
-
-def utility_rows(block: str) -> Dict[str, Tuple[float, float]]:
-    out: Dict[str, Tuple[float, float]] = {}
-    for line in block.splitlines():
-        if "&" not in line or "\\\\" not in line:
-            continue
-        cells = [c.strip() for c in line.split("&")]
-        if len(cells) != 3:
-            continue
-        label = clean_cell(cells[0])
-        if label == "Metric":
-            continue
-        a, b = num(cells[1]), num(cells[2])
-        if math.isfinite(a) and math.isfinite(b):
-            out[label] = (a, b)
+        if c[0]:
+            current = INV_MODEL.get(c[0])
+        if current and c[1] in INV_COND:
+            out[(current, INV_COND[c[1]])] = c[2:7]
     return out
 
 
-def find_utility_label(rows: Dict[str, Tuple[float, float]], required_words: List[str]) -> Tuple[str, Tuple[float, float]]:
-    for label, vals in rows.items():
-        low = label.lower()
-        if all(w.lower() in low for w in required_words):
-            return label, vals
-    raise KeyError(required_words)
-
-
-def audit_utility_table(tex: str, util: pd.DataFrame, checks: List[dict]) -> None:
-    rows = utility_rows(table_block(tex, "tab:utility"))
-    cond = "full_noise_amp0.5_dur0.0"
-    raw = util[(util["model"] == "Raw Whisper") & (util["condition"] == cond)].iloc[0]
-    seam = util[(util["model"] == "SeamlessM4T-v2") & (util["condition"] == cond)].iloc[0]
-
-    specs = [
-        (["baseline", "wer"], "WER_baseline", 3),
-        (["baseline", "strict"], "strict_H_qwen_baseline_pct", 1),
-        (["baseline", "rep34"], "rep34_baseline_pct", 1),
-        (["baseline", "top-1"], "top1_baseline_pct", 1),
-        (["anti-rep", "wer"], "delta_WER", 3),
-        (["anti-rep", "strict"], "delta_strict_H_qwen_pp", 1),
-        (["anti-rep", "rep34"], "delta_rep34_pp", 1),
-        (["anti-rep", "top-1"], "delta_top1_pp", 1),
-        (["dominant-output", "abstention"], "collapse_abstention_pct", 1),
-        (["strict", "captured"], "collapse_strict_H_qwen_capture_pct", 1),
-    ]
-    for words, col, dec in specs:
-        try:
-            label, observed = find_utility_label(rows, words)
-        except KeyError:
-            add_check(checks, f"utility row {'/'.join(words)} exists", False, expected="row", observed=None)
+def audit_stress(tex: str, df: pd.DataFrame, log: List[dict]) -> None:
+    rows = parse_stress(tex)
+    for r in df.itertuples():
+        model, cond = str(r.model), str(r.condition)
+        if model not in PAPER_MODEL or cond not in COND:
             continue
-        expected = (float(raw[col]), float(seam[col]))
-        ok = close_round(expected[0], observed[0], dec) and close_round(expected[1], observed[1], dec)
-        add_check(
-            checks,
-            f"utility {label}",
-            ok,
-            expected=[round(expected[0], dec), round(expected[1], dec)],
-            observed=list(observed),
-            source=str(UTILITY_CSV),
-        )
+        vals = rows.get((model, cond))
+        check(log, f"stress row {model} {COND[cond]}", vals is not None, "present", vals)
+        if vals is None:
+            continue
+        specs = [
+            (float(r.WER), number(vals[0]), 3, "WER"),
+            (float(r.qwen_plaus), number(vals[1]), 3, "Qwen ratio"),
+            (float(r.diag_H_qwen_pct), number(vals[2]), 1, "diag H_Q"),
+        ]
+        for a, b, d, m in specs:
+            check(log, f"stress {model} {COND[cond]} {m}", same_round(a, b, d), round(a, d), b, str(SUMMARY))
+
+        rep = float(r.rep34_pct)
+        rep_txt = vals[3].replace(" ", "")
+        if "<" in rep_txt:
+            ok = model == "Adapted Whisper" and cond == "none" and rep < 0.5
+            obs = rep_txt
+        else:
+            obs = number(vals[3])
+            ok = same_round(rep, obs, 1)
+        check(log, f"stress {model} {COND[cond]} Rep34", ok, round(rep, 1), obs, str(SUMMARY))
+
+        if cond == "none":
+            check(log, f"stress {model} clean Top-1 omitted", vals[4] == "--", "--", vals[4])
+        else:
+            obs = number(vals[4])
+            check(log, f"stress {model} {COND[cond]} Top-1", same_round(float(r.top1_mass_pct), obs, 1), round(float(r.top1_mass_pct), 1), obs, str(SUMMARY))
 
 
-def gate_row(path: Path, condition: str) -> pd.Series:
-    df = pd.read_csv(path)
-    key = "condition" if "condition" in df.columns else "perturbation"
-    z = df[df[key].astype(str) == condition]
+def ci_range(s: str) -> Tuple[float, float]:
+    m = re.search(r"([0-9.]+)\s*--\s*([0-9.]+)", cell(s))
+    if not m:
+        raise ValueError(f"Bad CI cell: {s!r}")
+    return float(m.group(1)), float(m.group(2))
+
+
+def audit_cis(tex: str, df: pd.DataFrame, log: List[dict]) -> None:
+    aliases = {"Raw": "Raw Whisper", "Adapted": "Adapted Whisper", "Seamless": "SeamlessM4T-v2"}
+    metrics = ["diag_H_qwen_pct", "rep34_pct", "top1_mass_pct"]
+    for line in block(tex, "tab:ci").splitlines():
+        if "&" not in line or "\\\\" not in line:
+            continue
+        c = [cell(x) for x in line.split("&")]
+        if len(c) < 5 or c[0] not in aliases or c[1] not in {".50", ".75"}:
+            continue
+        model, cond = aliases[c[0]], INV_COND[c[1]]
+        for metric, txt in zip(metrics, c[2:5]):
+            z = df[(df.model == model) & (df.condition == cond) & (df.metric == metric)]
+            if len(z) != 1:
+                check(log, f"CI source {model} {c[1]} {metric}", False, 1, len(z), str(CIS))
+                continue
+            lo, hi = float(z.iloc[0].ci_low), float(z.iloc[0].ci_high)
+            plo, phi = ci_range(txt)
+            check(log, f"CI {model} {c[1]} {metric}", round(lo, 1) == plo and round(hi, 1) == phi, [round(lo, 1), round(hi, 1)], [plo, phi], str(CIS))
+
+    clean = df[(df.condition == "none") & (df.metric == "WER")]
+    if len(clean) == 3:
+        common = [float(clean.ci_low.max()), float(clean.ci_high.min())]
+        check(log, "clean WER CIs overlap across all systems", common[0] <= common[1], "non-empty common overlap", common, str(CIS))
+    else:
+        check(log, "clean WER CI rows", False, 3, len(clean), str(CIS))
+
+
+def utility_rows(tex: str) -> Dict[str, Tuple[float, float]]:
+    out = {}
+    for line in block(tex, "tab:utility").splitlines():
+        if "&" not in line or "\\\\" not in line:
+            continue
+        c = [cell(x) for x in line.split("&")]
+        if len(c) != 3 or c[0] == "Metric":
+            continue
+        a, b = number(c[1]), number(c[2])
+        if math.isfinite(a) and math.isfinite(b):
+            out[c[0]] = (a, b)
+    return out
+
+
+def find_row(rows: Dict[str, Tuple[float, float]], words: Tuple[str, ...]):
+    for k, v in rows.items():
+        low = k.lower()
+        if all(w in low for w in words):
+            return k, v
+    return None, None
+
+
+def audit_utility(tex: str, df: pd.DataFrame, log: List[dict]) -> None:
+    rows = utility_rows(tex)
+    cond = "full_noise_amp0.5_dur0.0"
+    raw = df[(df.model == "Raw Whisper") & (df.condition == cond)].iloc[0]
+    seam = df[(df.model == "SeamlessM4T-v2") & (df.condition == cond)].iloc[0]
+    specs = [
+        (("baseline", "wer"), "WER_baseline", 3),
+        (("baseline", "strict"), "strict_H_qwen_baseline_pct", 1),
+        (("baseline", "rep34"), "rep34_baseline_pct", 1),
+        (("baseline", "top-1"), "top1_baseline_pct", 1),
+        (("anti-rep", "wer"), "delta_WER", 3),
+        (("anti-rep", "strict"), "delta_strict_H_qwen_pp", 1),
+        (("anti-rep", "rep34"), "delta_rep34_pp", 1),
+        (("anti-rep", "top-1"), "delta_top1_pp", 1),
+        (("dominant-output", "abstention"), "collapse_abstention_pct", 1),
+        (("strict", "captured"), "collapse_strict_H_qwen_capture_pct", 1),
+    ]
+    for words, col, d in specs:
+        label, obs = find_row(rows, words)
+        if obs is None:
+            check(log, f"utility row {'/'.join(words)}", False, "present", None)
+            continue
+        exp = [float(raw[col]), float(seam[col])]
+        ok = same_round(exp[0], obs[0], d) and same_round(exp[1], obs[1], d)
+        check(log, f"utility {label}", ok, [round(x, d) for x in exp], list(obs), str(UTILITY))
+
+
+def gate(path: Path, cond: str) -> pd.Series:
+    d = pd.read_csv(path)
+    key = "condition" if "condition" in d.columns else "perturbation"
+    z = d[d[key].astype(str) == cond]
     if len(z) != 1:
-        raise ValueError(f"Expected one {condition} row in {path}; got {len(z)}")
+        raise ValueError(f"Expected one {cond} row in {path}, got {len(z)}")
     return z.iloc[0]
 
 
-def audit_ctc_claims(tex: str, checks: List[dict]) -> None:
-    for p in [RAW_GATE_CSV, SEAM_GATE_CSV]:
-        require(p)
-    raw_clean = gate_row(RAW_GATE_CSV, "none")
-    seam_clean = gate_row(SEAM_GATE_CSV, "none")
-    expected_clean = [100 * float(raw_clean["coverage"]), 100 * float(seam_clean["coverage"])]
-    add_check(
-        checks,
-        "CTC clean coverage prose values",
-        f"{expected_clean[0]:.1f}\\%" in tex and f"{expected_clean[1]:.1f}\\%" in tex,
-        expected=[round(x, 1) for x in expected_clean],
-        observed="manuscript Independent acoustic support paragraph",
-        source=f"{RAW_GATE_CSV}; {SEAM_GATE_CSV}",
-    )
+def audit_ctc(tex: str, log: List[dict]) -> None:
+    for p in (RAW_GATE, SEAM_GATE):
+        need(p)
+    rc, sc = gate(RAW_GATE, "none"), gate(SEAM_GATE, "none")
+    clean_cov = [100 * float(rc.coverage), 100 * float(sc.coverage)]
+    ok = all(f"{x:.1f}\\%" in tex for x in clean_cov)
+    check(log, "CTC clean coverage prose", ok, [round(x, 1) for x in clean_cov], "paper text", f"{RAW_GATE}; {SEAM_GATE}")
 
-    for cond, amp in [("full_noise_amp0.5_dur0.0", "0.50"), ("full_noise_amp0.75_dur0.0", "0.75")]:
-        rr = gate_row(RAW_GATE_CSV, cond)
-        ss = gate_row(SEAM_GATE_CSV, cond)
-        cov = [100 * float(rr["coverage"]), 100 * float(ss["coverage"])]
-        add_check(
-            checks,
-            f"CTC severe coverage values {amp}",
-            True,  # exact values are checked below through the stated rounded claims
-            expected=[round(x, 1) for x in cov],
-            observed=[round(x, 1) for x in cov],
-            source=f"{RAW_GATE_CSV}; {SEAM_GATE_CSV}",
-        )
-        # The manuscript says all strict Qwen and GPT-2 cases are rejected.
-        captures = []
-        for row in (rr, ss):
-            for col in ("strict_qwen_H_capture", "strict_gpt2_H_capture"):
-                captures.append(float(row[col]))
-        add_check(
-            checks,
-            f"CTC captures all strict Qwen/GPT2 cases at {amp}",
-            all(np.isclose(x, 1.0) for x in captures),
-            expected=[1.0] * 4,
-            observed=captures,
-            source=f"{RAW_GATE_CSV}; {SEAM_GATE_CSV}",
-        )
-
-    # Directly verify the compact prose numbers currently used in the paper.
-    r05 = 100 * float(gate_row(RAW_GATE_CSV, "full_noise_amp0.5_dur0.0")["coverage"])
-    s05 = 100 * float(gate_row(SEAM_GATE_CSV, "full_noise_amp0.5_dur0.0")["coverage"])
-    r075 = 100 * float(gate_row(RAW_GATE_CSV, "full_noise_amp0.75_dur0.0")["coverage"])
-    s075 = 100 * float(gate_row(SEAM_GATE_CSV, "full_noise_amp0.75_dur0.0")["coverage"])
-    expected_sentence_numbers = [round(r05, 1), round(s05, 1), round(r075, 1), round(s075, 1)]
-    add_check(
-        checks,
-        "CTC severe coverage matches paper claim (0.1/0.2 and 0/0 as applicable)",
-        expected_sentence_numbers == [0.1, 0.2, 0.0, 0.0],
-        expected=[0.1, 0.2, 0.0, 0.0],
-        observed=expected_sentence_numbers,
-        source=f"{RAW_GATE_CSV}; {SEAM_GATE_CSV}",
-    )
+    observed_cov = []
+    captures = []
+    for cond in ("full_noise_amp0.5_dur0.0", "full_noise_amp0.75_dur0.0"):
+        for row in (gate(RAW_GATE, cond), gate(SEAM_GATE, cond)):
+            observed_cov.append(round(100 * float(row.coverage), 1))
+            captures.extend([float(row.strict_qwen_H_capture), float(row.strict_gpt2_H_capture)])
+    check(log, "CTC severe coverage prose values", observed_cov == [0.1, 0.2, 0.0, 0.0], [0.1, 0.2, 0.0, 0.0], observed_cov, f"{RAW_GATE}; {SEAM_GATE}")
+    check(log, "CTC rejects all strict Qwen/GPT2 cases under severe stress", all(np.isclose(x, 1.0) for x in captures), [1.0] * len(captures), captures, f"{RAW_GATE}; {SEAM_GATE}")
 
 
-def audit_raw_generic_outputs(checks: List[dict]) -> None:
-    if not RAW_TOP_CSV.exists():
-        add_check(checks, "Raw top-hypothesis audit available", False, expected=str(RAW_TOP_CSV), observed="missing")
-        return
-    top = pd.read_csv(RAW_TOP_CSV)
-    conds = {"full_noise_amp0.5_dur0.0", "full_noise_amp0.75_dur0.0"}
-    z = top[top["condition"].astype(str).isin(conds)]
-    vals = set(z["normalized_hypothesis"].fillna("").astype(str).str.strip().str.lower())
-    for phrase in ["you", "thank you"]:
-        add_check(
-            checks,
-            f"Raw severe top-output examples include '{phrase}'",
-            phrase in vals,
-            expected=True,
-            observed=(phrase in vals),
-            source=str(RAW_TOP_CSV),
-        )
+def audit_examples(log: List[dict]) -> None:
+    need(RAW_TOP)
+    d = pd.read_csv(RAW_TOP)
+    z = d[d.condition.astype(str).isin(["full_noise_amp0.5_dur0.0", "full_noise_amp0.75_dur0.0"])]
+    vals = set(z.normalized_hypothesis.fillna("").astype(str).str.strip().str.lower())
+    for phrase in ("you", "thank you"):
+        check(log, f"Raw severe top outputs contain '{phrase}'", phrase in vals, True, phrase in vals, str(RAW_TOP))
 
 
-def audit_gpt2_qualitative(summary: pd.DataFrame, checks: List[dict]) -> None:
-    # The paper only claims the same qualitative separation, not exact GPT-2
-    # values. Require Raw Whisper's severe-stress LM-relative ratio to be below
-    # both Adapted and Seamless at each severe level.
-    for cond in ["full_noise_amp0.5_dur0.0", "full_noise_amp0.75_dur0.0"]:
-        vals = {
-            str(r.model): float(r.gpt2_plaus)
-            for r in summary[summary["condition"] == cond].itertuples()
-        }
-        ok = (
-            vals.get("Raw Whisper", float("inf")) < vals.get("Adapted Whisper", float("-inf"))
-            and vals.get("Raw Whisper", float("inf")) < vals.get("SeamlessM4T-v2", float("-inf"))
-        )
-        add_check(checks, f"GPT-2 qualitative separation {COND_TO_PAPER[cond]}", ok, expected="Raw < Adapted and Seamless", observed=vals, source=str(SUMMARY_CSV))
+def audit_gpt2(df: pd.DataFrame, log: List[dict]) -> None:
+    for cond in ("full_noise_amp0.5_dur0.0", "full_noise_amp0.75_dur0.0"):
+        z = df[df.condition == cond]
+        vals = dict(zip(z.model.astype(str), z.gpt2_plaus.astype(float)))
+        raw = vals.get("Raw Whisper", float("inf"))
+        ok = raw < vals.get("Adapted Whisper", float("-inf")) and raw < vals.get("SeamlessM4T-v2", float("-inf"))
+        check(log, f"GPT-2 qualitative high-ratio separation {COND[cond]}", ok, "Raw < Adapted and Seamless", vals, str(SUMMARY))
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--tex", type=Path, default=REPO / "paper_icassp.tex")
-    p.add_argument("--output", type=Path, default=DEFAULT_REPORT)
+    p.add_argument("--output", type=Path, default=REPORT)
     args = p.parse_args()
-
-    for path in [args.tex, SUMMARY_CSV, CI_CSV, UTILITY_CSV]:
-        require(path)
+    for path in (args.tex, SUMMARY, CIS, UTILITY, RAW_GATE, SEAM_GATE, RAW_TOP):
+        need(path)
 
     tex = args.tex.read_text(encoding="utf-8")
-    summary = pd.read_csv(SUMMARY_CSV)
-    ci = pd.read_csv(CI_CSV)
-    util = pd.read_csv(UTILITY_CSV)
-    checks: List[dict] = []
+    summary = pd.read_csv(SUMMARY)
+    cis = pd.read_csv(CIS)
+    utility = pd.read_csv(UTILITY)
+    log: List[dict] = []
+    audit_stress(tex, summary, log)
+    audit_cis(tex, cis, log)
+    audit_utility(tex, utility, log)
+    audit_ctc(tex, log)
+    audit_examples(log)
+    audit_gpt2(summary, log)
 
-    audit_stress_table(tex, summary, checks)
-    audit_ci_table(tex, ci, checks)
-    audit_utility_table(tex, util, checks)
-    audit_ctc_claims(tex, checks)
-    audit_raw_generic_outputs(checks)
-    audit_gpt2_qualitative(summary, checks)
-
-    failures = [c for c in checks if not c["ok"]]
-    report = {
-        "manuscript": str(args.tex),
-        "checks_total": len(checks),
-        "checks_passed": len(checks) - len(failures),
-        "checks_failed": len(failures),
+    failures = [x for x in log if not x["ok"]]
+    result = {
         "status": "PASS" if not failures else "FAIL",
+        "checks_total": len(log),
+        "checks_passed": len(log) - len(failures),
+        "checks_failed": len(failures),
         "failures": failures,
-        "checks": checks,
+        "checks": log,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
+    args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print("=== ICASSP PAPER NUMERICAL AUDIT ===")
-    print(f"status: {report['status']}")
-    print(f"passed: {report['checks_passed']}/{report['checks_total']}")
-    if failures:
-        print("\nFAILURES:")
-        for item in failures:
-            print(f"- {item['check']}: expected={item['expected']} observed={item['observed']}")
-    print(f"\nReport: {args.output}")
+    print(f"status: {result['status']}  passed: {result['checks_passed']}/{result['checks_total']}")
+    for x in failures:
+        print(f"FAIL: {x['check']} expected={x['expected']} observed={x['observed']}")
+    print(f"Report: {args.output}")
     raise SystemExit(1 if failures else 0)
 
 
