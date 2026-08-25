@@ -1,0 +1,368 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{makecell}
+\usepackage{textcomp}
+
+\begin{document}
+
+\title{Beyond WER: Diagnosing Hallucination-Like Failures in Generative ASR Under Acoustic Stress}
+\author{\IEEEauthorblockN{Anonymous Authors}}
+\maketitle
+
+\begin{abstract}
+Word error rate (WER) measures how inaccurate an automatic speech recognition
+(ASR) output is, but not how it fails. Under weak acoustic evidence, generative
+ASR systems may produce ordinary recognition errors, repetitive decoding,
+generic decoder defaults, cross-utterance output collapse, or fluent text that
+is weakly supported by the signal. We introduce a multi-axis diagnostic
+framework combining lexical error, LM-relative plausibility, within-output
+repetition, cross-utterance output concentration, and independent acoustic
+support. We evaluate raw Whisper-large-v3, a Common-Voice-adapted
+Whisper-large-v3, and SeamlessM4T-v2-Large under a shared acoustic-stress
+protocol on the same held-out utterances. The
+systems exhibit sharply different severe-noise regimes: raw Whisper collapses
+toward a few generic outputs, adapted Whisper produces highly plausible
+prior-dominated text with strong concentration, and SeamlessM4T produces highly
+plausible outputs with substantial repetition. These differences are not
+visible from WER alone. Independent wav2vec2-CTC scoring confirms loss of
+acoustic support, while targeted intervention experiments show that
+anti-repetition decoding substantially reduces the repetition-heavy SeamlessM4T
+failure but has little effect on raw Whisper's dominant collapse. The results
+support treating hallucination-like ASR failure as a heterogeneous set of
+failure regimes rather than a single scalar error category.
+\end{abstract}
+
+\begin{IEEEkeywords}
+automatic speech recognition, hallucination, robustness, acoustic stress,
+evaluation, decoding failure
+\end{IEEEkeywords}
+
+\section{Introduction}
+Large generative ASR systems combine acoustic evidence with strong learned
+linguistic priors. These priors are useful while the speech signal remains
+informative, but when acoustic evidence becomes insufficient they can dominate
+decoding and produce fluent yet weakly grounded text. Recent work has reported
+hallucination-like ASR behavior under non-speech input, distribution shift,
+disfluency, and challenging recording conditions
+\cite{koenecke2024careless,atwany2025lost,baranski2025investigation,sridhar25_interspeech,imai-etal-2025-evaluating}.
+
+A central difficulty is that WER does not identify the \emph{type} of failure.
+Two hypotheses can have similarly catastrophic WER while representing very
+different behaviors: one may be a short generic decoder default, another a
+repeated phrase, and another a fluent sentence with little acoustic support.
+These distinctions matter because they imply different intervention targets.
+A repetition penalty cannot fix a failure dominated by cross-utterance mode
+collapse, and a decoder-level constraint cannot restore information that is no
+longer present in the signal.
+
+We therefore ask a focused question: \emph{when acoustic evidence deteriorates,
+do generative ASR systems fail in the same way?} We introduce a multi-axis
+failure profile and apply a shared acoustic-stress protocol to three systems
+spanning two model families and two Whisper model states. Our results show that severe
+acoustic uncertainty does not induce a universal failure signature. Raw Whisper
+primarily collapses to a few generic defaults; adapted Whisper produces highly
+plausible, increasingly concentrated output; and SeamlessM4T produces highly
+plausible output with substantial within-output repetition.
+
+Our contributions are twofold. First, we propose a diagnostic evaluation that
+separates lexical error, LM-relative plausibility, repetition, cross-utterance
+concentration, and independent acoustic support. Second, we show that these
+dimensions expose distinct cross-model failure regimes under matched acoustic
+stress and predict which observable failure component is affected by targeted
+interventions. The aim is not to propose a new decoding algorithm, but to make
+ASR failure analysis more informative than aggregate WER alone.
+
+\section{Related Work}
+Hallucination-like behavior in ASR has been studied from several complementary
+angles. Recent analyses report fabricated, repeated, or weakly grounded
+transcriptions under non-speech input, distribution shift, disfluent speech,
+and difficult acoustic conditions
+\cite{koenecke2024careless,atwany2025lost,baranski2025investigation,sridhar25_interspeech,imai-etal-2025-evaluating,Zhang2024}.
+These studies establish that severe ASR errors can be reliability failures
+rather than ordinary lexical mistakes, but the resulting behaviors are often
+summarized with aggregate error rates or a single hallucination label.
+
+WER remains the standard ASR metric, yet it conflates substitutions, deletions,
+insertions, repetition, and unsupported generation. Complementary metrics based
+on semantic similarity, information content, or fluency can expose additional
+structure \cite{martindale-etal-2019-identifying,ERRATTAHI201832,papineni-etal-2002-bleu,lin-2004-rouge,mutton-etal-2007-gleu}. Recent work such as SHALLOW
+\cite{Koudounas2025SHALLOW} likewise motivates multi-axis evaluation of ASR
+hallucination. Our focus is narrower and operational: we use lexical error,
+LM-relative plausibility, repetition, output concentration, and independent
+acoustic support together to distinguish \emph{failure regimes}, then test
+whether those distinctions predict how simple interventions behave.
+
+Perturbation-based evaluation is a natural way to expose such regimes. Noise
+injection and robustness studies show that input degradation can change not
+only the amount but also the structure of ASR error
+\cite{Fetic2021TopicMR,morales2007adding,Iwamoto2022HowBA}. Meanwhile,
+mitigation work spans rescoring, contextual biasing, error correction,
+sequence-level training, robust acoustic training, post-processing, and decoder
+adaptation
+\cite{shivakumar_li_knight_georgiou_2019,fang-etal-2022-non,Sudo2024ContextualizedAS,udagawa2024robustasrerrorcorrection,rao2021mean,Park2019SpecAugmentAS,baranski2025investigation,wang25b_interspeech}.
+Rather than proposing another mitigation method, we use simple targeted
+interventions as probes of whether the diagnosed failure dimensions are
+behaviorally meaningful.
+
+\section{Diagnostic Framework}
+\subsection{Multi-axis failure profile}
+We characterize each hypothesis along five complementary axes. \textbf{Lexical
+error} is measured by WER using one frozen normalization pipeline. We apply
+Unicode NFKC normalization and lowercasing, remove model control tokens, expand
+unambiguous English contractions, treat punctuation and hyphens as token
+boundaries, and exclude invalid placeholder references. \textbf{LM-relative plausibility} uses Qwen3-0.6B as the primary
+evaluator and GPT-2 as a robustness check. For LM $m$, let
+$s_m(z)=\exp(-\overline{\mathrm{NLL}}_m(z))$. We report
+$P_m=\min(1,s_m(\hat y)/(s_m(y)+10^{-8}))$, where $y$ is the reference.
+Thus $P_m$ is an evaluation-only, reference-normalized fluency ratio rather than
+a reference-free detector. \textbf{Within-output repetition} is the incidence
+of at least one repeated trigram or four-gram (Rep34). \textbf{Cross-utterance concentration}
+is the fraction of a condition mapped to the most frequent normalized
+hypothesis (Top-1 mass). Finally, \textbf{acoustic support} is measured with an
+independent wav2vec2-CTC recognizer using target-token-normalized negative
+log-likelihood of the generated hypothesis.
+
+No single axis is treated as hallucination ground truth. In particular,
+repetition and output concentration remain separate from LM-relative
+plausibility: a short generic default can be highly concentrated while receiving
+a low plausibility score, whereas a fluent unsupported hypothesis can be
+plausible without belonging to a dominant output mode.
+
+\subsection{Operational hallucination-like signature}
+To trace high-error/high-plausibility behavior, for plausibility model $m$ we
+use
+\begin{equation}
+H_m^{\mathrm{diag}}(x)=
+\mathbb{1}[\mathrm{WER}(x)>\tau_W]
+\mathbb{1}[P_m(x)>\tau_m],
+\end{equation}
+where $\tau_W$ and $\tau_m$ are estimated from the corresponding model's clean
+development distribution and frozen before stress evaluation. We additionally report $H_m^{\mathrm{strict}}$, replacing the first
+condition with $\mathrm{WER}>0.5$. The clean diagnostic rate is a calibration reference, not
+an estimate of hallucination prevalence. Qwen3 is reported in the main results;
+GPT-2 is used to verify that the qualitative conclusions do not depend on one
+LM evaluator.
+
+\section{Experimental Setup}
+\subsection{Models and acoustic stress}
+We evaluate three generative ASR systems on English Mozilla Common Voice
+22.0 (2025-06-20): untouched \texttt{openai/whisper-large-v3} (Raw Whisper), a
+Common-Voice-adapted Whisper-large-v3 checkpoint (Adapted Whisper), and untouched
+\texttt{facebook/seamless-m4t-v2-large}. Development and test manifests are
+disjoint, and each cross-model condition uses 1,000 held-out test utterances
+from the same test manifest. The adapted model is additionally evaluated with
+silence, leading silence, localized noise, reverberation, speech-band noise, and
+full-utterance additive noise. The cross-model comparison uses clean speech and
+full-utterance noise at amplitudes 0.50 and 0.75. Full noise adds i.i.d. Gaussian
+waveform noise scaled by this absolute amplitude before clipping to $[-1,1]$;
+the stress levels are not SNR-normalized. Model-specific thresholds are
+calibrated on clean development outputs and frozen before test evaluation.
+
+The severe conditions are diagnostic stress tests rather than a simulation of
+one specific deployment environment. The broader battery establishes that not
+all perturbations produce the same behavior: moderate or localized corruption
+primarily increases recognition error, whereas the severe full-utterance
+conditions expose decoder-dominated regimes after acoustic constraint has been
+substantially weakened.
+
+\subsection{Independent support and interventions}
+We use wav2vec2-CTC as an independent acoustic-support model. Its summed CTC
+loss for the generated hypothesis is normalized by the number of CTC target
+tokens. A reference-free abstention rule emits a hypothesis only when
+\begin{equation}
+\frac{\mathrm{NLL}_{\mathrm{CTC}}(x,\hat y)}{|\hat y|}\leq \tau,
+\end{equation}
+with $\tau$ calibrated on disjoint development stress data subject to a clean
+coverage constraint and frozen for test evaluation.
+
+To test whether the diagnostic profile has decision utility, we evaluate
+(1) anti-repetition decoding with a fixed repetition penalty of 1.2, set before
+TEST and not tuned on TEST, and (2) a dominant-output rejection lexicon learned
+only from stressed DEV while preserving at least 99\% clean-DEV coverage
+(maximum 20 entries). These are deliberately simple probes targeting different
+textual signatures; they are not proposed as state-of-the-art mitigation
+methods.
+
+\section{Results}
+\subsection{Shared stress protocol reveals distinct failure regimes}
+Table~\ref{tab:stress} reports the central cross-model comparison. Clean WER is
+similar across systems (0.108--0.121), but the severe-noise behavior diverges
+sharply.
+
+\begin{table}[t]
+\centering
+\caption{Failure signatures under a shared acoustic-stress protocol. $H_Q$
+denotes the Qwen3 diagnostic high-WER/high-plausibility rate using the
+reference-normalized LM ratio. Rep34 is repeated trigram/four-gram incidence;
+Top-1 is the most frequent normalized-hypothesis mass.}
+\label{tab:stress}
+\scriptsize
+\setlength{\tabcolsep}{2.2pt}
+\begin{tabular}{llrrrrr}
+\toprule
+Model & Cond. & WER & Qwen & $H_Q$\% & Rep34\% & Top-1\% \\
+\midrule
+Raw Whisper & clean & .121 & .876 & 15.2 & .2 & -- \\
+             & .50   & 1.046 & .255 & 21.5 & 2.0 & 46.2 \\
+             & .75   & 1.036 & .113 & 9.9 & 1.8 & 67.2 \\
+\midrule
+Adapted Whisper & clean & .108 & .866 & 14.6 & $<$.5 & -- \\
+                & .50   & 1.899 & .917 & 86.9 & 14.7 & 27.0 \\
+                & .75   & 1.759 & .957 & 93.3 & 8.7 & 49.6 \\
+\midrule
+SeamlessM4T & clean & .108 & .888 & 18.0 & .3 & -- \\
+            & .50   & 2.184 & .971 & 93.6 & 27.5 & 6.4 \\
+            & .75   & 2.380 & .977 & 95.8 & 28.6 & 7.7 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Raw Whisper: decoder-default collapse.} At noise 0.50, Top-1 mass is
+46.2\%; at 0.75 it rises to 67.2\%. At the same time Qwen3 plausibility falls
+from 0.255 to 0.113 and $H_Q$ decreases from 21.5\% to 9.9\%. Inspection of the
+frequency distribution shows that the dominant outputs are short generic
+strings such as ``you'' and ``thank you''. Thus, worsening acoustics increases
+output collapse while decreasing the LM-based hallucination score. This is a
+failure mode that a high-plausibility criterion alone would miss.
+
+\textbf{Adapted Whisper: fluent prior-dominated output with concentration.}
+Under the same stress protocol, plausibility remains high (0.917--0.957) and $H_Q$ reaches
+86.9--93.3\%. Top-1 mass simultaneously rises from 27.0\% to 49.6\%. Relative to
+raw Whisper, the adapted model therefore produces substantially more plausible
+text while still becoming concentrated on a restricted output distribution.
+We describe this association as a model-state difference rather than attributing
+it causally to fine-tuning.
+
+\textbf{SeamlessM4T: fluent failure with substantial repetition.} SeamlessM4T
+reaches WER 2.184--2.380 while Qwen3 plausibility remains 0.971--0.977 and
+$H_Q$ exceeds 93\%. Unlike raw Whisper, Top-1 mass remains low (6.4--7.7\%), but
+Rep34 rises to 27.5--28.6\%. The output distribution is therefore comparatively
+diverse while containing substantial within-output degeneration.
+
+\begin{table}[t]
+\centering
+\caption{Bootstrap 95\% CIs for the main severe-noise phenotype measures
+($B=2{,}000$).}
+\label{tab:ci}
+\scriptsize
+\setlength{\tabcolsep}{2.6pt}
+\begin{tabular}{llrrr}
+\toprule
+Model & Noise & $H_Q$ (\%) & Rep34 (\%) & Top-1 (\%) \\
+\midrule
+Raw & .50 & 18.8--24.1 & 1.2--2.9 & 43.0--49.2 \\
+Raw & .75 & 8.0--11.8 & 1.0--2.7 & 64.1--70.2 \\
+Adapted & .50 & 84.9--89.0 & 12.6--16.9 & 24.2--29.7 \\
+Adapted & .75 & 91.7--94.8 & 7.1--10.5 & 46.3--52.9 \\
+Seamless & .50 & 92.1--95.0 & 24.8--30.4 & 5.5--7.9 \\
+Seamless & .75 & 94.5--97.0 & 25.8--31.4 & 7.0--9.5 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Bootstrap confidence intervals ($B=2{,}000$) confirm that the major contrasts
+are not explained by test-set sampling. At noise 0.50, Rep34 95\% intervals are
+1.2--2.9\% (Raw), 12.6--16.9\% (Adapted), and 24.8--30.4\% (Seamless); Top-1
+intervals are 43.0--49.2\%, 24.2--29.7\%, and 5.5--7.9\%, respectively. Clean
+WER intervals overlap across all three systems. GPT-2 scoring yields the same
+qualitative separation between raw default collapse and the high-plausibility
+Adapted/Seamless regimes.
+
+These results show why a single hallucination rate is insufficient. Loss of
+acoustic constraint is common to the severe conditions, but the resulting
+textual phenotype differs substantially across systems and model states.
+
+\subsection{Independent acoustic support}
+The independent CTC score provides convergent evidence that flagged outputs are
+less acoustically supported than matched controls. When used as a frozen
+abstention gate, it retains 96.5\% of clean Raw-Whisper outputs and 97.0\% of
+clean SeamlessM4T outputs. At noise 0.50, coverage falls to 0.1\% and 0.2\%, and
+at 0.75 to 0\% for both models; all strict Qwen3- and GPT-2-defined cases are
+therefore rejected under these extreme conditions. This should not be read as a
+near-perfect detector: at severe stress the gate is intentionally conservative
+and effectively concludes that the signal is no longer reliable enough to
+transcribe. Its value is as an independent acoustic-grounding check, not as
+error correction.
+
+\subsection{Failure signatures predict intervention behavior}
+Table~\ref{tab:utility} compares decision-level interventions at noise 0.50.
+The same anti-repetition penalty has very different effects because repetition
+is a major SeamlessM4T failure component but only a minor Raw-Whisper component.
+
+\begin{table}[t]
+\centering
+\caption{Decision utility at noise amplitude 0.50. Deltas are relative to the
+baseline decoding.}
+\label{tab:utility}
+\scriptsize
+\setlength{\tabcolsep}{3.0pt}
+\begin{tabular}{lrr}
+\toprule
+Metric & Raw Whisper & SeamlessM4T \\
+\midrule
+Baseline WER & 1.046 & 2.184 \\
+Baseline strict $H_Q$ (\%) & 21.1 & 92.7 \\
+Baseline Rep34 (\%) & 2.0 & 27.5 \\
+Baseline Top-1 (\%) & 46.2 & 6.4 \\
+\midrule
+Anti-rep. $\Delta$WER & -0.039 & -0.362 \\
+Anti-rep. $\Delta$strict $H_Q$ (pp) & -0.7 & -3.5 \\
+Anti-rep. $\Delta$Rep34 (pp) & -1.8 & -23.6 \\
+Anti-rep. $\Delta$Top-1 (pp) & 0.0 & +8.1 \\
+\midrule
+Dominant-output abstention (\%) & 70.3 & 58.3 \\
+Strict $H_Q$ captured (\%) & 4.7 & 61.8 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+For Raw Whisper, anti-repetition decoding reduces Rep34 from 2.0\% to 0.2\% but
+barely changes WER, strict $H_Q$, or Top-1 mass. It removes a secondary symptom
+without addressing the dominant cross-utterance collapse. For SeamlessM4T, the
+same intervention reduces Rep34 from 27.5\% to 3.9\% and WER from 2.184 to
+1.822. Yet strict $H_Q$ remains 89.2\% and Top-1 mass increases from 6.4\% to
+14.5\%. Suppressing repetition therefore improves one diagnosed component while
+leaving weak grounding largely unresolved and shifting the output distribution
+toward greater concentration.
+
+The dominant-output lexicon shows the complementary effect. It rejects 70.3\%
+of Raw-Whisper outputs but captures only 4.7\% of strict $H_Q$ cases because many
+of the dominant generic defaults are not highly plausible according to Qwen3.
+On SeamlessM4T it rejects 58.3\% and captures 61.8\% of strict $H_Q$ cases. The
+intervention results therefore validate the diagnostic decomposition: different
+metrics correspond to different observable failure components, and improving one
+axis need not resolve the others.
+
+\section{Discussion and Conclusion}
+Severe acoustic uncertainty does not induce one universal generative-ASR failure
+mode. Under the same stress protocol, raw Whisper primarily maps acoustically different
+utterances to a few generic decoder defaults; adapted Whisper preserves a high LM-relative plausibility ratio while becoming
+strongly concentrated; and SeamlessM4T produces similarly high-ratio output with
+substantial within-output repetition. WER alone cannot distinguish these regimes,
+while LM-relative plausibility alone
+would miss raw Whisper's strongest collapse.
+
+The intervention probes show why this distinction matters operationally.
+Anti-repetition decoding is effective when repetition is prominent, but does
+little for decoder-default collapse and does not by itself restore acoustic
+grounding. Independent CTC support provides a phenotype-agnostic abstention
+signal when the speech no longer constrains the hypothesis. We therefore argue
+for evaluating hallucination-like ASR failure as a multi-dimensional failure
+profile rather than a single binary or scalar category.
+
+The current study is limited to three model states from two generative ASR
+families and deliberately severe synthetic stress. The operational high-WER/high-plausibility criterion is evaluation-only,
+reference-normalized, and not human ground truth; the acoustic-support gate
+becomes near-total abstention once the signal is overwhelmed. Broader model families, realistic environmental noise, and human
+audio-grounding judgments are needed before drawing deployment-level
+conclusions.
+
+\bibliographystyle{IEEEtran}
+\bibliography{custom,mybib,rebuttal_additions}
+
+\end{document}
