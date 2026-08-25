@@ -39,7 +39,7 @@ echo "Test TSV: ${TEST_TSV}"
 echo "Output: ${OUTDIR}"
 echo "N per condition: ${MAX_SAMPLES:-1000}"
 echo "LMs: Qwen/Qwen3-0.6B + GPT2"
-echo "Seed: ${SEED:-20260820}"
+echo "Seed: ${SEED:-20260821}"
 echo
 echo "Battery:"
 echo "  clean"
@@ -77,7 +77,7 @@ python -u acoustic_stress_experiment.py \
     --batch_size "${BATCH_SIZE:-8}" \
     --lm_batch_size "${LM_BATCH_SIZE:-8}" \
     --bootstrap "${N_BOOT:-10000}" \
-    --seed "${SEED:-20260820}" \
+    --seed "${SEED:-20260821}" \
     "${EXTRA_ARGS[@]}"
 
 echo
