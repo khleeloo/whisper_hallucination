@@ -71,7 +71,7 @@ def static_checks() -> Dict[str, Any]:
     checks: Dict[str, Any] = {}
 
     # Dataset provenance.
-    cv_match = re.search(r'cv-corpus-([0-9.]+)-([0-9-]+)/en', abst)
+    cv_match = re.search(r"cv-corpus-([0-9.]+)-([0-9-]+)/en", abst)
     checks["dataset"] = {
         "corpus": "Mozilla Common Voice English",
         "version": cv_match.group(1) if cv_match else None,
@@ -123,8 +123,9 @@ def static_checks() -> Dict[str, Any]:
         "definition": "Rep34 is the fraction of outputs containing at least one repeated trigram or four-gram.",
     }
 
+    model_match = re.search(r"DEFAULT_MODEL_NAME\s*=\s*[\"']([^\"']+)", ctc)
     checks["ctc"] = {
-        "model": re.search(r'DEFAULT_MODEL_NAME\s*=\s*[\"']([^\"']+)', ctc).group(1),
+        "model": model_match.group(1) if model_match else None,
         "token_normalization_verified": "normalized = losses / target_lengths.float()" in abst,
         "gate_direction_verified": "values <= float(threshold)" in abst,
         "paper_safe_definition": (
