@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
-#SBATCH --time=12:00:00
+#SBATCH --time=08:00:00
 #SBATCH --mem=128G
 #SBATCH -o /home/rmfrieske/whisper_hallucination/slurm_logs/%j_halas_ft_hall.out
 #SBATCH -e /home/rmfrieske/whisper_hallucination/slurm_logs/%j_halas_ft_hall.err
@@ -18,7 +18,7 @@ cd /home/rmfrieske/whisper_hallucination
 mkdir -p slurm_logs
 
 python halas_finetune_forgetting.py generate \
-  --adapter /scratch/vemotionsys/rmfrieske/whisper_hallucination/base/checkpoint-14000 \
+  --adapter /scratch/vemotionsys/rmfrieske/whisper_hallucination/base/checkpoint-10000 \
   --output_dir /scratch/vemotionsys/rmfrieske/whisper_hallucination/halas_finetune_forgetting \
   --sample_size 300 \
   --batch_size 8 \
