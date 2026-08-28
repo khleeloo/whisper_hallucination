@@ -13,6 +13,8 @@ sentence-transformers
 pandas
 numpy
 scikit-learn
+scipy
+soundfile
 matplotlib
 seaborn
 tqdm
