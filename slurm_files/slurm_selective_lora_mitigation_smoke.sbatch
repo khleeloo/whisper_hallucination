@@ -17,7 +17,7 @@ cd /home/rmfrieske/whisper_hallucination
 mkdir -p slurm_logs
 
 python selective_lora_mitigation.py \
-  --adapter /scratch/vemotionsys/rmfrieske/whisper_hallucination/base/checkpoint-14000 \
+  --adapter /scratch/vemotionsys/rmfrieske/whisper_hallucination/base/checkpoint-10000 \
   --output_dir /scratch/vemotionsys/rmfrieske/whisper_hallucination/selective_lora_mitigation_smoke \
   --max_samples 20 \
   --batch_size 4 \
