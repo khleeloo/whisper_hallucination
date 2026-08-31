@@ -33,15 +33,15 @@ if [[ ! -f "${INPUT}" ]]; then
   exit 2
 fi
 
-python - <<'PY'
-try:
-    import jellyfish
-    print("jellyfish already available", getattr(jellyfish, "__version__", "version-unreported"))
-except Exception:
-    raise SystemExit(3)
+if python - <<'PY'
+import jellyfish
+required = ["metaphone", "hamming_distance", "levenshtein_distance", "jaro_winkler_similarity"]
+assert all(hasattr(jellyfish, name) for name in required)
+print("jellyfish already available")
 PY
-STATUS=$?
-if [[ ${STATUS} -eq 3 ]]; then
+then
+  :
+else
   echo "Installing official SHALLOW dependency jellyfish==1.2.0"
   python -m pip install --quiet jellyfish==1.2.0
 fi
