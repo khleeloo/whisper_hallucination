@@ -14,6 +14,12 @@ Higher PF means greater phonetic fabrication / lower phonetic similarity.
 SHALLOW does not define a binary PF hallucination threshold, so this script does
 not invent one. It reports PF distributions for all outputs and for the frozen
 high-error/high-Qwen-plausibility candidate subsets used in our paper.
+
+Pairwise confidence intervals use a matched-utterance bootstrap. The same held-out
+utterance IDs are resampled jointly across the two compared corruption conditions.
+For candidate-only subsets, the condition-specific candidate masks are reapplied
+inside every paired bootstrap resample, so the marginal subset means are preserved
+without breaking the matched evaluation design.
 """
 from __future__ import annotations
 
@@ -47,21 +53,16 @@ def shallow_phonetic_components(reference: str, hypothesis: str) -> tuple[float,
     """Exact SHALLOW PF component computation."""
     reference = "" if pd.isna(reference) else str(reference)
     hypothesis = "" if pd.isna(hypothesis) else str(hypothesis)
-
     if reference == hypothesis:
         return 0.0, 0.0, 1.0, 0.0, jellyfish.metaphone(reference), jellyfish.metaphone(hypothesis)
-
     ref_meta = jellyfish.metaphone(reference)
     hyp_meta = jellyfish.metaphone(hypothesis)
-
     hamm = jellyfish.hamming_distance(ref_meta, hyp_meta)
     max_h = max(len(ref_meta), len(hyp_meta), 1)
     hamm_norm = hamm / max_h if hamm is not None else 0.0
-
     leven = jellyfish.levenshtein_distance(ref_meta, hyp_meta)
     max_l = max(len(ref_meta), len(hyp_meta), 1)
     leven_norm = leven / max_l if leven is not None else 0.0
-
     jaro_winkler = jellyfish.jaro_winkler_similarity(ref_meta, hyp_meta)
     pf = (hamm_norm + leven_norm + (1.0 - jaro_winkler)) / 3.0
     return float(hamm_norm), float(leven_norm), float(jaro_winkler), float(pf), ref_meta, hyp_meta
@@ -70,13 +71,7 @@ def shallow_phonetic_components(reference: str, hypothesis: str) -> tuple[float,
 def describe_pf(values: pd.Series, prefix: str) -> dict[str, float | int]:
     x = pd.to_numeric(values, errors="coerce").dropna().to_numpy(dtype=float)
     if len(x) == 0:
-        return {
-            f"{prefix}_N": 0,
-            f"{prefix}_PF_mean": np.nan,
-            f"{prefix}_PF_median": np.nan,
-            f"{prefix}_PF_q25": np.nan,
-            f"{prefix}_PF_q75": np.nan,
-        }
+        return {f"{prefix}_N": 0, f"{prefix}_PF_mean": np.nan, f"{prefix}_PF_median": np.nan, f"{prefix}_PF_q25": np.nan, f"{prefix}_PF_q75": np.nan}
     return {
         f"{prefix}_N": int(len(x)),
         f"{prefix}_PF_mean": float(np.mean(x)),
@@ -86,19 +81,65 @@ def describe_pf(values: pd.Series, prefix: str) -> dict[str, float | int]:
     }
 
 
-def bootstrap_mean_ci(a: np.ndarray, b: np.ndarray, seed: int, reps: int = 10000) -> tuple[float, float, float]:
-    """Bootstrap CI for mean PF difference a-b."""
-    if len(a) == 0 or len(b) == 0:
-        return np.nan, np.nan, np.nan
+def _subset_mean(frame: pd.DataFrame, pf_col: str, mask_col: str | None) -> float:
+    if mask_col is None:
+        values = pd.to_numeric(frame[pf_col], errors="coerce")
+    else:
+        mask = pd.to_numeric(frame[mask_col], errors="coerce").fillna(0).astype(int) == 1
+        values = pd.to_numeric(frame.loc[mask, pf_col], errors="coerce")
+    values = values.dropna()
+    return float(values.mean()) if len(values) else np.nan
+
+
+def paired_bootstrap_mean_contrast(
+    paired: pd.DataFrame,
+    mask_base: str | None,
+    seed: int,
+    reps: int = 10000,
+) -> tuple[float, float, float, int, int, int]:
+    """Matched-utterance bootstrap CI for mean PF difference A-B."""
+    if len(paired) == 0:
+        return np.nan, np.nan, np.nan, 0, 0, 0
+    mask_a = None if mask_base is None else f"{mask_base}_a"
+    mask_b = None if mask_base is None else f"{mask_base}_b"
+    mean_a = _subset_mean(paired, "shallow_PF_a", mask_a)
+    mean_b = _subset_mean(paired, "shallow_PF_b", mask_b)
+    obs = mean_a - mean_b if np.isfinite(mean_a) and np.isfinite(mean_b) else np.nan
+    if mask_a is None:
+        n_a = int(pd.to_numeric(paired["shallow_PF_a"], errors="coerce").notna().sum())
+        n_b = int(pd.to_numeric(paired["shallow_PF_b"], errors="coerce").notna().sum())
+    else:
+        valid_a = pd.to_numeric(paired["shallow_PF_a"], errors="coerce").notna()
+        valid_b = pd.to_numeric(paired["shallow_PF_b"], errors="coerce").notna()
+        n_a = int(((pd.to_numeric(paired[mask_a], errors="coerce").fillna(0) == 1) & valid_a).sum())
+        n_b = int(((pd.to_numeric(paired[mask_b], errors="coerce").fillna(0) == 1) & valid_b).sum())
     rng = np.random.default_rng(seed)
-    obs = float(np.mean(a) - np.mean(b))
-    diffs = np.empty(reps, dtype=float)
+    diffs = np.full(reps, np.nan, dtype=float)
+    n = len(paired)
     for i in range(reps):
-        aa = rng.choice(a, size=len(a), replace=True)
-        bb = rng.choice(b, size=len(b), replace=True)
-        diffs[i] = np.mean(aa) - np.mean(bb)
-    lo, hi = np.quantile(diffs, [0.025, 0.975])
-    return obs, float(lo), float(hi)
+        idx = rng.integers(0, n, size=n)
+        boot = paired.iloc[idx]
+        boot_a = _subset_mean(boot, "shallow_PF_a", mask_a)
+        boot_b = _subset_mean(boot, "shallow_PF_b", mask_b)
+        if np.isfinite(boot_a) and np.isfinite(boot_b):
+            diffs[i] = boot_a - boot_b
+    valid_diffs = diffs[np.isfinite(diffs)]
+    if len(valid_diffs) == 0:
+        return obs, np.nan, np.nan, n_a, n_b, 0
+    lo, hi = np.quantile(valid_diffs, [0.025, 0.975])
+    return obs, float(lo), float(hi), n_a, n_b, int(len(valid_diffs))
+
+
+def make_paired_conditions(pg: pd.DataFrame, ca: str, cb: str) -> pd.DataFrame:
+    cols = ["utterance_id", "shallow_PF", "broad_candidate", "broad_nonrep_candidate"]
+    a = pg.loc[pg["condition"] == ca, cols].copy()
+    b = pg.loc[pg["condition"] == cb, cols].copy()
+    if a["utterance_id"].duplicated().any() or b["utterance_id"].duplicated().any():
+        raise ValueError(f"Duplicate utterance IDs prevent one-to-one pairing for {ca} vs {cb}.")
+    paired = a.merge(b, on="utterance_id", how="inner", suffixes=("_a", "_b"), validate="one_to_one")
+    if len(paired) != len(a) or len(paired) != len(b):
+        raise ValueError(f"Unmatched utterance IDs for {ca} vs {cb}: A={len(a)}, B={len(b)}, matched={len(paired)}")
+    return paired
 
 
 def main() -> None:
@@ -110,11 +151,10 @@ def main() -> None:
     args = parser.parse_args()
 
     df = pd.read_csv(args.input, low_memory=False)
-    required = {"reference", "hypothesis", "WER", "qwen_plaus", "model_name", "condition", "corruption_ratio", "perturbation"}
+    required = {"utterance_id", "reference", "hypothesis", "WER", "qwen_plaus", "model_name", "condition", "corruption_ratio", "perturbation"}
     missing = sorted(required - set(df.columns))
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
-
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     components = [shallow_phonetic_components(r, h) for r, h in zip(df["reference"], df["hypothesis"])]
@@ -155,18 +195,21 @@ def main() -> None:
     summary_path = args.output_dir / "summary_shallow_pf.csv"
     summary.to_csv(summary_path, index=False)
 
-    # Pairwise PF contrasts among the 64% models, separately for clean/stress.
     contrast_rows = []
     structure = df[(pd.to_numeric(df["corruption_ratio"], errors="coerce") == 0.64) & df["condition"].isin(CONDITION_NAMES)]
     conditions = ["RR", "RU", "UR", "UU"]
+    subset_specs = [("all", None), ("broad_candidate", "broad_candidate"), ("broad_nonrep_candidate", "broad_nonrep_candidate")]
     for perturbation, pg in structure.groupby("perturbation", sort=False):
-        for subset_name, mask_col in [("all", None), ("broad_candidate", "broad_candidate"), ("broad_nonrep_candidate", "broad_nonrep_candidate")]:
-            sg = pg if mask_col is None else pg[pg[mask_col] == 1]
+        for subset_name, mask_base in subset_specs:
             for i, ca in enumerate(conditions):
                 for cb in conditions[i + 1:]:
-                    a = pd.to_numeric(sg.loc[sg["condition"] == ca, "shallow_PF"], errors="coerce").dropna().to_numpy(float)
-                    b = pd.to_numeric(sg.loc[sg["condition"] == cb, "shallow_PF"], errors="coerce").dropna().to_numpy(float)
-                    obs, lo, hi = bootstrap_mean_ci(a, b, seed=args.seed + len(contrast_rows), reps=args.bootstrap_reps)
+                    paired = make_paired_conditions(pg, ca, cb)
+                    obs, lo, hi, n_a, n_b, valid_reps = paired_bootstrap_mean_contrast(
+                        paired,
+                        mask_base=mask_base,
+                        seed=args.seed + len(contrast_rows),
+                        reps=args.bootstrap_reps,
+                    )
                     contrast_rows.append({
                         "perturbation": perturbation,
                         "subset": subset_name,
@@ -174,12 +217,15 @@ def main() -> None:
                         "condition_a_name": CONDITION_NAMES[ca],
                         "condition_b": cb,
                         "condition_b_name": CONDITION_NAMES[cb],
-                        "N_a": int(len(a)),
-                        "N_b": int(len(b)),
+                        "matched_utterance_N": int(len(paired)),
+                        "N_a": n_a,
+                        "N_b": n_b,
                         "mean_PF_a_minus_b": obs,
-                        "bootstrap_95ci_low": lo,
-                        "bootstrap_95ci_high": hi,
+                        "paired_bootstrap_95ci_low": lo,
+                        "paired_bootstrap_95ci_high": hi,
                         "bootstrap_reps": args.bootstrap_reps,
+                        "valid_bootstrap_reps": valid_reps,
+                        "bootstrap_design": "matched utterance IDs; condition-specific subset means recomputed within each joint resample",
                     })
     contrasts = pd.DataFrame(contrast_rows)
     contrasts_path = args.output_dir / "pairwise_shallow_pf_contrasts.csv"
@@ -193,30 +239,25 @@ def main() -> None:
         "jellyfish_version_required": JELLYFISH_VERSION,
         "formula": "PF=(hamming_norm+levenshtein_norm+(1-jaro_winkler))/3 on jellyfish.metaphone strings",
         "interpretation": "Higher PF means greater phonetic fabrication / lower phonetic similarity; no binary SHALLOW PF threshold is imposed.",
-        "candidate_thresholds": {
-            "broad_WER_gt": WER_THRESHOLD,
-            "strict_WER_gt": STRICT_WER_THRESHOLD,
-            "Qwen_plausibility_gt": QWEN_THRESHOLD,
+        "candidate_thresholds": {"broad_WER_gt": WER_THRESHOLD, "strict_WER_gt": STRICT_WER_THRESHOLD, "Qwen_plausibility_gt": QWEN_THRESHOLD},
+        "pairwise_bootstrap": {
+            "design": "matched utterance-level bootstrap",
+            "unit": "utterance_id",
+            "reps": args.bootstrap_reps,
+            "subset_handling": "condition-specific candidate masks are reapplied inside each joint bootstrap resample",
+            "interpretation": "descriptive 95% bootstrap confidence intervals for paired mean PF contrasts; no null-hypothesis p-values are reported",
         },
         "input": str(args.input),
-        "outputs": {
-            "per_utterance": str(per_path),
-            "summary": str(summary_path),
-            "pairwise_contrasts": str(contrasts_path),
-        },
+        "outputs": {"per_utterance": str(per_path), "summary": str(summary_path), "pairwise_contrasts": str(contrasts_path)},
     }
     manifest_path = args.output_dir / "shallow_pf_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-    display = summary[[
-        "condition_name", "perturbation", "N",
-        "all_PF_mean", "all_PF_median",
-        "broad_candidate_rate_pct", "broad_candidate_N", "broad_candidate_PF_mean", "broad_candidate_PF_median",
-        "broad_nonrep_candidate_N", "broad_nonrep_candidate_PF_mean",
-        "strict_candidate_N", "strict_candidate_PF_mean",
-    ]]
+    display = summary[["condition_name", "perturbation", "N", "all_PF_mean", "all_PF_median", "broad_candidate_rate_pct", "broad_candidate_N", "broad_candidate_PF_mean", "broad_candidate_PF_median", "broad_nonrep_candidate_N", "broad_nonrep_candidate_PF_mean", "strict_candidate_N", "strict_candidate_PF_mean"]]
     print("=== SHALLOW phonetic fabrication (PF) summary ===")
     print(display.to_string(index=False))
+    print("\n=== Paired utterance-bootstrap PF contrasts ===")
+    print(contrasts.to_string(index=False))
     print(f"\nSaved: {per_path}")
     print(f"Saved: {summary_path}")
     print(f"Saved: {contrasts_path}")
