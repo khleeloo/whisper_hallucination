@@ -25,7 +25,8 @@ mkdir -p slurm_logs
 
 OUTPUT_DIR="/scratch/vemotionsys/rmfrieske/whisper_hallucination/training_error_risk_map"
 
-echo "=== Training-error risk-map experiment ==="
+echo "=== Training-error structure risk-map experiment ==="
+echo "Primary comparison: RR vs RU vs UR vs UU, all at 64% corruption"
 echo "Git commit: $(git rev-parse HEAD)"
 echo "Host: $(hostname)"
 echo "Python: $(which python)"
@@ -45,18 +46,19 @@ PY
 
 python -m py_compile training_error_risk_map.py
 
+# First decisive test: keep corruption prevalence fixed and vary only its structure.
+# We deliberately do not include the 16/32% survivor checkpoints here because their
+# training-step comparability needs to be verified before claiming a dose response.
 python training_error_risk_map.py \
     --output_dir "${OUTPUT_DIR}" \
+    --conditions rr_64 ru_64 ur_64 uu_64 \
     --max_samples 300 \
     --batch_size 8 \
     --qwen_batch_size 8 \
     --seed 20260828 \
     --perturbations none full_noise_amp0.5_dur0.0
 
-echo "=== Main outputs ==="
+echo "=== 64% structure comparison ==="
 cat "${OUTPUT_DIR}/structure_64pct.csv"
-echo
-echo "=== Dose response ==="
-cat "${OUTPUT_DIR}/dose_response_rr_ru.csv"
 echo
 echo "=== Done ==="
