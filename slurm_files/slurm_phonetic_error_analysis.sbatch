@@ -3,6 +3,7 @@
 #SBATCH --partition=normal
 #SBATCH --account='vemotionsys'
 #SBATCH --nodes=1
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --time=00:30:00
 #SBATCH --mem=16G
@@ -24,6 +25,7 @@ echo "=== Phonetic-error audit ==="
 echo "Git commit: $(git rev-parse HEAD)"
 echo "Input: ${INPUT}"
 echo "Output: ${OUTPUT}"
+echo "GPU allocation required by cluster policy; analysis itself is CPU-only."
 
 if [[ ! -f "${INPUT}" ]]; then
   echo "ERROR: missing cached risk-map output: ${INPUT}" >&2
